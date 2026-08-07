@@ -1,0 +1,54 @@
+[package]
+name = "ssh-client"
+version = "0.1.0"
+description = "Tauri desktop shell for Luna Remote"
+edition = "2024"
+
+[lib]
+name = "ssh_client_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+anyhow = "1"
+async-trait = "0.1"
+async-recursion = "1"
+base64 = "0.22"
+chrono = { version = "0.4", features = ["serde"] }
+dirs = "6"
+fast-socks5 = "0.10"
+futures = "0.3"
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "webp", "bmp", "gif"] }
+keyring = { version = "3", features = ["apple-native", "windows-native"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream"] }
+regex = "1"
+rusqlite = { version = "0.37", features = ["bundled"] }
+russh = "0.54"
+russh-sftp = "2.1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+tauri = { version = "2", features = ["macos-private-api", "image-png", "image-ico"] }
+tauri-plugin-clipboard-manager = "2"
+tauri-plugin-dialog = "2"
+tauri-plugin-opener = "2"
+thiserror = "2"
+tokio = { version = "1", features = ["fs", "io-util", "macros", "net", "rt-multi-thread", "sync", "time"] }
+tokio-util = { version = "0.7", features = ["io"] }
+uuid = { version = "1", features = ["v4", "serde"] }
+url = "2"
+walkdir = "2"
+zeroize = "1"
+fontdb = { version = "0.23.0", default-features = false, features = ["std", "fs"] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "0.6"
+objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "NSApplication", "NSImage", "NSResponder"] }
+objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSData", "NSThread"] }
+
+[target.'cfg(target_os = "windows")'.dependencies]
+ico = "0.5"
+webview2-com = "0.38.2"
+windows = { version = "0.61", features = ["Win32_Storage_EnhancedStorage", "Win32_Storage_FileSystem", "Win32_System_Com", "Win32_System_Com_StructuredStorage", "Win32_UI_Shell", "Win32_UI_Shell_PropertiesSystem", "Win32_UI_WindowsAndMessaging"] }

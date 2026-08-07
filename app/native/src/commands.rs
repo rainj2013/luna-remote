@@ -20,6 +20,9 @@ use crate::{
     transfers::TransferManager, tunnels::TunnelManager,
 };
 
+const CONNECTION_ARCHIVE_FORMAT: &str = "luna-remote-connections";
+const LEGACY_CONNECTION_ARCHIVE_FORMAT: &str = "ssh-client-connections";
+
 pub struct AppState {
     pub db: Arc<Database>,
     pub sessions: Arc<SessionManager>,
@@ -580,7 +583,7 @@ pub async fn bookmarks_export_archive(
     state: State<'_, AppState>,
 ) -> Result<Option<String>, String> {
     let default = format!(
-        "ssh-client-connections-{}.json",
+        "luna-remote-connections-{}.json",
         Utc::now().format("%Y-%m-%d")
     );
     let (sender, receiver) = tokio::sync::oneshot::channel();
@@ -617,7 +620,7 @@ pub async fn bookmarks_export_archive(
         })
         .collect();
     let archive = BookmarkArchive {
-        format: "ssh-client-connections".into(),
+        format: CONNECTION_ARCHIVE_FORMAT.into(),
         version: 1,
         exported_at: Utc::now().to_rfc3339(),
         groups: state.db.list_bookmark_groups()?,
@@ -657,7 +660,10 @@ pub async fn bookmarks_import_archive(
     let archive: BookmarkArchive =
         serde_json::from_str(&fs::read_to_string(&path).map_err(|e| e.to_string())?)
             .map_err(|e| format!("连接备份格式无效：{e}"))?;
-    if archive.format != "ssh-client-connections" || archive.version != 1 {
+    if (archive.format != CONNECTION_ARCHIVE_FORMAT
+        && archive.format != LEGACY_CONNECTION_ARCHIVE_FORMAT)
+        || archive.version != 1
+    {
         return Err("不支持此连接备份格式或版本".into());
     }
     if archive.connections.len() > 10_000 || archive.groups.len() > 1_000 {
@@ -1297,7 +1303,7 @@ pub async fn diagnostics_export(
     state: State<'_, AppState>,
 ) -> Result<Option<String>, String> {
     let default = format!(
-        "ssh-client-diagnostics-{}.json",
+        "luna-remote-diagnostics-{}.json",
         Utc::now().format("%Y-%m-%dT%H-%M-%S")
     );
     let (sender, receiver) = tokio::sync::oneshot::channel();

@@ -1,6 +1,6 @@
 {
-  "name": "ssh-client",
-  "version": "0.1.0",
+  "name": "luna-remote",
+  "version": "1.0.0",
   "description": "Cross-platform SSH and SFTP desktop client",
   "type": "module",
   "scripts": {

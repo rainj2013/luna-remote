@@ -91,7 +91,7 @@ rustc --version
 cargo --version
 ```
 
-`node --version` 应为 `v24.x`，`rustc` 应为 1.85 或更高版本。首次安装依赖需要访问 npm registry 和仓库配置的 Cargo 镜像。
+`node --version` 应为 `v24.x`，`rustc` 应为 1.85 或更高版本。首次安装依赖需要访问 npm registry 和 crates.io。
 
 ## 启动开发环境
 
@@ -112,7 +112,7 @@ Web 页面离开 Tauri Runtime 后无法完整使用本地数据库、SSH、SFTP
 
 开发启动不需要环境变量或 API Key。AI 命令助手为可选功能，可以在应用的“设置 → AI”中配置 OpenAI 兼容服务。
 
-> 开发版和安装版当前使用相同的应用标识 `com.local.sshclient`，会访问同一份应用数据和系统凭据。调试已有安装环境前，请先在应用中导出连接备份。
+> 开发版和安装版当前使用相同的应用标识 `com.local.lunaremote`，会访问同一份应用数据和系统凭据。调试已有安装环境前，请先在应用中导出连接备份。
 
 ## 检查
 
@@ -128,7 +128,7 @@ npm run web:build
 
 Tauri 安装包必须在目标平台原生构建，产物位于 `app/native/target/release/bundle/`。未配置证书时会生成未签名安装包。正式分发前应配置 Apple Developer ID、公证和 Windows 代码签名。
 
-仓库已固定使用 rsproxy 的 Cargo sparse registry，避免企业网络下 crates.io 下载缓慢以及切换源造成缓存不一致。首次构建或 `package-lock.json` 变化后执行一次下面的命令。
+GitHub Actions 和默认开发环境使用 crates.io。首次构建或 `package-lock.json` 变化后执行一次下面的命令。
 
 ```bash
 fnm use
@@ -162,7 +162,7 @@ hdiutil verify "app/native/target/release/bundle/dmg/Luna Remote_<version>_<arch
 npm run build:win
 ```
 
-普通包内置 WebView2 bootstrapper。目标机器缺少 WebView2 Runtime 时，安装过程需要联网。
+普通包不内置 WebView2 bootstrapper 或 Runtime。目标机器缺少 WebView2 Runtime 时，安装程序会联网下载 bootstrapper。
 
 构建包含 WebView2 Runtime 的离线包。
 
@@ -172,17 +172,53 @@ npm run build:win:offline
 
 离线包体积更大，构建机首次打包仍需联网下载 Microsoft WebView2 离线安装器。发布前应在 Windows 真机验证普通包和离线包的安装、覆盖安装、卸载及重启恢复。
 
-## 常见问题
+## GitHub Actions
 
-### Cargo 依赖下载失败
+仓库中的 `Build and Release` 工作流会构建四个安装包。
 
-仓库的 `.cargo/config.toml` 将 crates.io 替换为 rsproxy sparse registry。先确认可以访问 `https://rsproxy.cn`，然后重试。
+- macOS Intel x64 DMG
+- macOS Apple Silicon ARM64 DMG
+- Windows x64 联网安装包
+- Windows x64 WebView2 离线安装包
+
+在 GitHub 仓库的 Actions 页面中手动运行工作流时，构建结果会作为临时 Artifact 保存 14 天。推送以 `v` 开头的版本标签时，工作流还会创建同名 GitHub Release，并上传全部安装包。
 
 ```bash
+git tag v1.0.0
+git push origin v1.0.0
+```
+
+macOS 安装包使用 ad-hoc 签名，不需要 Apple 开发者证书。它没有经过 Apple 公证，用户首次运行时仍需在“隐私与安全性”设置中确认。Windows 安装包没有代码签名，系统可能显示未知发布者或 SmartScreen 提示。
+
+## 常见问题
+
+### 配置 Cargo 国内镜像
+
+macOS 和 Linux 使用下面的命令。
+
+```bash
+cp .cargo/config.rsproxy.toml.example .cargo/config.toml
 cargo fetch --manifest-path app/native/Cargo.toml
 ```
 
-如果所在网络无法使用 rsproxy，可以在本地删除 `.cargo/config.toml` 中的 `[source.crates-io]` 和 `[source.rsproxy-sparse]` 配置，恢复使用 crates.io。不要将这一临时修改提交到仓库。
+Windows PowerShell 使用下面的命令。
+
+```powershell
+Copy-Item .cargo/config.rsproxy.toml.example .cargo/config.toml
+cargo fetch --manifest-path app/native/Cargo.toml
+```
+
+恢复 crates.io。
+
+```bash
+rm .cargo/config.toml
+```
+
+Windows PowerShell：
+
+```powershell
+Remove-Item .cargo/config.toml
+```
 
 ### 端口 1420 被占用
 

@@ -1,59 +1,72 @@
-# Luna Remote
+<div align="center">
+  <img src="assets/icons/ssh.png" width="96" alt="Luna Remote 图标">
+  <h1>Luna Remote</h1>
+  <p>面向 macOS 和 Windows 的 SSH 与 SFTP 桌面客户端</p>
+  <p>
+    <a href="https://github.com/rainj2013/luna-remote/releases/latest"><img src="https://img.shields.io/github/v/release/rainj2013/luna-remote?style=flat-square" alt="最新版本"></a>
+    <a href="https://github.com/rainj2013/luna-remote/actions/workflows/release.yml"><img src="https://github.com/rainj2013/luna-remote/actions/workflows/release.yml/badge.svg" alt="构建状态"></a>
+    <img src="https://img.shields.io/badge/platform-macOS%20%7C%20Windows-5b8def?style=flat-square" alt="支持平台">
+  </p>
+  <p>
+    <a href="https://github.com/rainj2013/luna-remote/releases/latest">下载最新版本</a>
+    ·
+    <a href="docs/DEVELOPMENT.md">开发文档</a>
+  </p>
+</div>
 
-我想要一个打开就能干活的远程工具。服务器按组放好，点一下进入终端，要传文件就切到旁边的 SFTP，临时开个端口转发也不用再找另一款软件。
-
-我把这些需求收进一个应用，名字叫 Luna Remote。它目前可以运行在 macOS 和 Windows 上，SSH 终端、SFTP、端口转发、连接管理和 AI 命令助手都放在同一个窗口里。
-
-[下载最新版本](https://github.com/rainj2013/luna-remote/releases/latest)
+Luna Remote 把日常远程工作放进一个窗口。连接服务器后，可以随时在终端和 SFTP 之间切换，也能直接管理端口转发、连接配置和多个并行会话。
 
 ![Luna Remote 终端界面](docs/images/terminal.png)
 
-## 打开连接，直接干活
+## SSH 终端
 
-终端是这里的主角。你可以用密码、键盘交互、私钥或 SSH Agent 登录，应用会处理 Host Key 校验、会话保活，也支持通过一级跳板机连接目标服务器。
+- 支持密码、键盘交互、私钥和 SSH Agent 认证
+- 提供 Host Key 校验、会话保活和一级跳板机
+- 同一台服务器可以打开多个独立会话
+- 连接支持分组、排序、折叠和 SSH Config 导入
+- 字体、字号、配色、透明度和背景图均可调整
+- 支持深色、浅色和跟随系统的界面主题
 
-连接可以分组、排序和折叠。同一台机器需要同时跑几件事时，继续开新会话就行。字体、字号、配色、透明度和背景图都能调整，深色与浅色界面也可以跟着系统切换。
+## SFTP 与目录部署
 
-## 传文件时，不必离开当前窗口
+本地目录和远程目录采用双栏布局。文件和目录可以直接上传、下载、预览或拖放，传输任务会进入队列，失败后可以重试。
 
-本地目录和远程目录并排显示，上传、下载、预览和拖放都在这一个页面完成。目录传输、路径收藏、传输队列、失败重试和冲突处理也都在。
-
-如果你经常把本地项目传到服务器，可以先比较两边的目录差异，再批量上传有变化的内容。
+目录部署会先比较本地与远程内容，再批量上传有变化的文件。常用路径可以收藏，遇到同名文件时也可以选择覆盖、跳过或自动重命名。
 
 ![Luna Remote SFTP 文件传输界面](docs/images/sftp.png)
 
-## AI 可以帮忙，最后由你确认
+## 端口转发
 
-有些命令不难，只是参数很难记。把要做的事写给 AI 命令助手，它可以生成 Linux Shell、PowerShell、CMD 或 macOS 命令，同时说明用途、前提和风险。
+Luna Remote 支持本地转发、远程转发和 SOCKS5 动态转发。转发规则跟随连接保存，需要时可以直接启用，不必重复填写主机和端口。
 
-生成结果可以复制，也可以填入当前终端。真正执行以前，你仍然可以逐字检查。需要终端上下文时，可以附上最近的输出，常见凭据和个人信息会先做脱敏。
+## AI 命令助手
 
-AI 命令助手支持 OpenAI 兼容服务，是否配置完全由你决定，不影响 SSH 和 SFTP 的正常使用。
+用自然语言描述任务后，AI 命令助手可以生成 Linux Shell、PowerShell、CMD 或 macOS 命令，并说明命令用途、执行前提和潜在风险。
+
+生成结果可以复制或填入当前终端，执行前仍由用户确认。附带终端上下文时，最近的输出会先经过常见凭据和个人信息脱敏。AI 功能支持 OpenAI 兼容服务，不配置也不会影响 SSH 和 SFTP。
 
 ![Luna Remote AI 命令助手](docs/images/ai-command.png)
 
-## 还有一些每天都会碰到的细节
+## 本地数据与个性化
 
-- 密码和密钥口令存入 macOS Keychain 或 Windows Credential Manager
-- 支持本地转发、远程转发和 SOCKS5 动态转发
-- 可以导入 SSH Config
-- 连接配置可以备份和恢复
-- 同一台服务器可以打开多个独立会话
-- 界面主题、终端背景和应用图标都可以更换
+- 凭据保存在 macOS Keychain 或 Windows Credential Manager
+- 连接配置支持导出、备份和恢复
+- 文件传输提供历史记录和失败重试
+- 应用图标、界面主题和终端外观均可更换
 
 ## 下载
 
-当前版本是 `v1.0.0`，发布页提供四种安装包。
+安装包可以从 [Releases](https://github.com/rainj2013/luna-remote/releases/latest) 获取。
 
-- macOS Apple Silicon ARM64
-- macOS Intel x64
-- Windows x64 联网安装包
-- Windows x64 WebView2 离线安装包
+| 平台 | 安装包 | 说明 |
+| --- | --- | --- |
+| macOS Apple Silicon | `Luna-Remote_macos-arm64.dmg` | 适用于 M 系列芯片 |
+| macOS Intel | `Luna-Remote_macos-x64.dmg` | 适用于 Intel Mac |
+| Windows x64 | `Luna-Remote_windows-x64-online-setup.exe` | 缺少 WebView2 时联网下载 |
+| Windows x64 | `Luna-Remote_windows-x64-offline-setup.exe` | 内置 WebView2，适合离线安装 |
 
-安装包目前没有开发者签名。macOS 首次运行时需要在“隐私与安全性”中确认，Windows 可能显示未知发布者或 SmartScreen 提示。
+当前安装包没有开发者签名。macOS 首次运行时需要在“隐私与安全性”中确认，Windows 可能显示未知发布者或 SmartScreen 提示。
 
-[前往 Releases 下载](https://github.com/rainj2013/luna-remote/releases)
+## 开发
 
-## 想自己跑起来
-
-环境搭建、项目结构、检查命令和打包发布都放在 [开发文档](docs/DEVELOPMENT.md) 里，README 只留给软件本身。
+项目结构、环境搭建、检查命令和打包发布说明见 [开发文档](docs/DEVELOPMENT.md)。

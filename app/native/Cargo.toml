@@ -2,6 +2,7 @@
 name = "luna-remote"
 version = "1.0.0"
 description = "Tauri desktop shell for Luna Remote"
+license = "MIT"
 edition = "2024"
 
 [lib]

@@ -70,3 +70,7 @@ Luna Remote 支持本地转发、远程转发和 SOCKS5 动态转发。转发规
 ## 开发
 
 项目结构、环境搭建、检查命令和打包发布说明见 [开发文档](docs/DEVELOPMENT.md)。
+
+## 许可证
+
+Luna Remote 基于 [MIT License](LICENSE) 发布。项目使用的第三方组件和字体保留其各自的许可证。

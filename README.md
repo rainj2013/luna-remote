@@ -14,6 +14,8 @@
   </p>
 </div>
 
+<div align="center"><a href="README.en.md">English</a> · 简体中文</div>
+
 Luna Remote 把日常远程工作放进一个窗口。连接服务器后，可以随时在终端和 SFTP 之间切换，也能直接管理端口转发、连接配置和多个并行会话。
 
 ![Luna Remote 终端界面](docs/images/terminal.png)

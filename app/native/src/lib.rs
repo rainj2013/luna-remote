@@ -47,11 +47,7 @@ fn migrate_legacy_database(data_dir: &Path) -> Result<(), String> {
     }
     let mut candidates = vec![data_dir.join(LEGACY_DATABASE_FILE)];
     if let Some(parent) = data_dir.parent() {
-        candidates.push(
-            parent
-                .join(LEGACY_IDENTIFIER)
-                .join(LEGACY_DATABASE_FILE),
-        );
+        candidates.push(parent.join(LEGACY_IDENTIFIER).join(LEGACY_DATABASE_FILE));
     }
     let Some(source) = candidates.into_iter().find(|path| path.is_file()) else {
         return Ok(());
@@ -118,7 +114,7 @@ pub fn run() {
             let _ = (window, event);
         });
     #[cfg(target_os = "macos")]
-    let builder = builder.menu(desktop::menu);
+    let builder = builder.menu(|app| desktop::menu(app, &models::NativeMenuLabels::default()));
     builder
         .setup(|app| {
             let data_dir = app
@@ -230,6 +226,9 @@ pub fn run() {
             state_set_sidebar_width,
             settings_get_ui_theme,
             settings_save_ui_theme,
+            settings_get_language,
+            settings_apply_language,
+            settings_save_language,
             settings_get_terminal,
             settings_save_terminal,
             settings_list_system_fonts,

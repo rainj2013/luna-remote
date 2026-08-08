@@ -16,7 +16,7 @@ use tauri_plugin_opener::OpenerExt;
 use uuid::Uuid;
 
 use crate::{
-    ai, app_icon, database::Database, models::*, sessions::SessionManager, ssh_config,
+    ai, app_icon, database::Database, desktop, models::*, sessions::SessionManager, ssh_config,
     transfers::TransferManager, tunnels::TunnelManager,
 };
 
@@ -752,6 +752,34 @@ pub fn state_set_sidebar_width(state: State<AppState>, width: u32) -> Result<(),
 pub fn settings_get_ui_theme(state: State<AppState>) -> UiTheme {
     state.db.get_setting("uiTheme", UiTheme::System)
 }
+
+#[tauri::command]
+pub fn settings_get_language(state: State<AppState>) -> String {
+    state.db.get_setting("language", "zh-CN".to_string())
+}
+
+#[tauri::command]
+pub fn settings_apply_language(app: AppHandle, menu: NativeMenuLabels) -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    app.set_menu(desktop::menu(&app, &menu).map_err(|error| error.to_string())?)
+        .map_err(|error| error.to_string())?;
+    #[cfg(not(target_os = "macos"))]
+    let _ = (app, menu);
+    Ok(())
+}
+
+#[tauri::command]
+pub fn settings_save_language(
+    app: AppHandle,
+    state: State<AppState>,
+    language: String,
+    menu: NativeMenuLabels,
+) -> Result<String, String> {
+    state.db.set_setting("language", &language)?;
+    settings_apply_language(app, menu)?;
+    Ok(language)
+}
+
 #[tauri::command]
 pub fn settings_save_ui_theme(
     window: WebviewWindow,

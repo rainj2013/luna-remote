@@ -436,6 +436,7 @@ body.sidebar-item-dragging, body.sidebar-item-dragging * { cursor: grabbing !imp
 .port-field { min-width: 0; }
 .input-button, .password-input { display: flex; align-items: center; }
 .input-button input, .password-input input { min-width: 0; flex: 1; border-radius: 5px 0 0 5px !important; }
+.password-input input::-ms-reveal, .password-input input::-ms-clear { display: none; }
 .input-button button, .password-input button { height: 34px; border-radius: 0 5px 5px 0; }
 .password-input .icon-button { border: 1px solid var(--border-strong); border-left: 0; background: var(--surface-subtle); }
 .check-label { display: flex !important; grid-template-columns: none !important; align-items: center; gap: 7px !important; }

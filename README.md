@@ -64,8 +64,8 @@ Luna Remote 支持本地转发、远程转发和 SOCKS5 动态转发。转发规
 | --- | --- | --- |
 | macOS Apple Silicon | `Luna-Remote_macos-arm64.dmg` | 适用于 M 系列芯片 |
 | macOS Intel | `Luna-Remote_macos-x64.dmg` | 适用于 Intel Mac |
-| Windows x64 | `Luna-Remote_windows-x64-online-setup.exe` | 缺少 WebView2 时联网下载 |
-| Windows x64 | `Luna-Remote_windows-x64-offline-setup.exe` | 内置 WebView2，适合离线安装 |
+| Windows x64 | `Luna-Remote_windows-x64-setup.exe` | 标准版，推荐；缺少 WebView2 时联网下载 |
+| Windows x64 | `Luna-Remote_windows-x64-with-webview2-setup.exe` | 内置 WebView2，仅用于无法联网安装 WebView2 的兼容场景 |
 
 当前安装包没有开发者签名。macOS 首次运行时需要在“隐私与安全性”中确认，Windows 可能显示未知发布者或 SmartScreen 提示。
 

@@ -65,8 +65,8 @@ Installers are available from [GitHub Releases](https://github.com/rainj2013/lun
 | --- | --- | --- |
 | macOS Apple Silicon | `Luna-Remote_macos-arm64.dmg` | For M-series Macs |
 | macOS Intel | `Luna-Remote_macos-x64.dmg` | For Intel Macs |
-| Windows x64 | `Luna-Remote_windows-x64-online-setup.exe` | Downloads WebView2 when required |
-| Windows x64 | `Luna-Remote_windows-x64-offline-setup.exe` | Includes WebView2 for offline installation |
+| Windows x64 | `Luna-Remote_windows-x64-setup.exe` | Recommended standard package; downloads WebView2 when required |
+| Windows x64 | `Luna-Remote_windows-x64-with-webview2-setup.exe` | Bundles WebView2 for compatibility when it cannot be downloaded during installation |
 
 The current installers are not signed with public developer certificates. On first launch, macOS requires confirmation in Privacy & Security, and Windows may show an unknown-publisher or SmartScreen warning.
 

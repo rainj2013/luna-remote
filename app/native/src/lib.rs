@@ -165,6 +165,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             platform,
             system_open_external,
+            system_check_for_updates,
             bookmarks_list,
             bookmarks_save,
             bookmarks_reorder,

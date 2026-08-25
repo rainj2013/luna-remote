@@ -1,4 +1,5 @@
 import { invoke } from '@tauri-apps/api/core'
+import { getVersion } from '@tauri-apps/api/app'
 import { listen } from '@tauri-apps/api/event'
 import { getCurrentWebview } from '@tauri-apps/api/webview'
 import { getCurrentWindow } from '@tauri-apps/api/window'
@@ -14,7 +15,7 @@ const send = (command: string, args?: Record<string, unknown>): void => {
 }
 
 export async function createTauriApi(): Promise<AppApi> {
-  const platform = await call<Platform>('platform')
+  const [platform, appVersion] = await Promise.all([call<Platform>('platform'), getVersion()])
   const currentWindow = getCurrentWindow()
   await getCurrentWebview().onDragDropEvent((event) => {
     if (event.payload.type !== 'drop') return
@@ -27,8 +28,10 @@ export async function createTauriApi(): Promise<AppApi> {
   })
   return {
     platform,
+    appVersion,
     system: {
       openExternal: (url) => call('system_open_external', { value: url }),
+      checkForUpdates: () => call('system_check_for_updates'),
       readClipboard: () => readText(),
       writeClipboard: (text) => writeText(text.slice(0, 4 * 1024 * 1024)),
       minimizeWindow: () => currentWindow.minimize(),

@@ -1,7 +1,7 @@
 export default {
   "app.aFileWithThisNameAlreadyExists": "A file with this name already exists",
   "app.about": "About",
-  "app.aboutDescription": "A desktop terminal client for SSH and SFTP workflows.",
+  "app.aboutDescription": "A desktop terminal client for SSH and SFTP workflows",
   "app.alreadyLatestVersion": "You are using the latest version ({{value0}})",
   "app.aiCommand": "AI command",
   "app.aiCommandAssistant": "AI command assistant",

@@ -317,8 +317,10 @@ export interface TransferRequest {
 
 export interface AppApi {
   platform: Platform
+  appVersion: string
   system: {
     openExternal(url: string): Promise<void>
+    checkForUpdates(): Promise<{ currentVersion: string; latestVersion: string; releaseUrl: string; updateAvailable: boolean }>
     readClipboard(): Promise<string>
     writeClipboard(text: string): Promise<void>
     minimizeWindow(): Promise<void>

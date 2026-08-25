@@ -10,10 +10,11 @@ import { useI18n } from '../i18n'
 
 const terminalHighWaterMark = 1024 * 1024
 const terminalLowWaterMark = 256 * 1024
+const terminalAccentColor = '#337fd6'
 const terminalSelectionTheme = {
-  selectionBackground: '#ffd43b',
-  selectionInactiveBackground: '#ffd43b',
-  selectionForeground: '#16181b'
+  selectionBackground: terminalAccentColor,
+  selectionInactiveBackground: terminalAccentColor,
+  selectionForeground: '#ffffff'
 }
 interface TerminalSearchMatch { row: number; col: number; length: number }
 
@@ -133,7 +134,7 @@ export const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>(fu
     const term = new Terminal({
       cursorBlink: true, convertEol: false, allowTransparency: true, fontFamily: settings.fontFamily,
       fontSize: settings.fontSize, lineHeight: 1.25, scrollback: 5000,
-      theme: { background: rendererBackground, foreground: settings.foregroundColor, cursor: '#78d64b', ...terminalSelectionTheme }
+      theme: { background: rendererBackground, foreground: settings.foregroundColor, cursor: terminalAccentColor, ...terminalSelectionTheme }
     })
     const fit = new FitAddon()
     fitAddon.current = fit

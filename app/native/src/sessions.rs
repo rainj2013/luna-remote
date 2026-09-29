@@ -81,6 +81,7 @@ struct ClientHandler {
     db: Arc<Database>,
     decisions: Arc<StdMutex<HashMap<String, oneshot::Sender<bool>>>>,
     forwarded_routes: ForwardedRoutes,
+    non_interactive: bool,
 }
 
 type ForwardedRoutes =
@@ -97,6 +98,9 @@ impl client::Handler for ClientHandler {
             .map_err(|error| anyhow!(error))?;
         if known.as_deref() == Some(&fingerprint) {
             return Ok(true);
+        }
+        if self.non_interactive {
+            return Ok(false);
         }
         let (send, receive) = oneshot::channel();
         self.decisions
@@ -185,6 +189,22 @@ pub struct SessionManager {
     sessions: RwLock<HashMap<String, Arc<ActiveSession>>>,
     decisions: Arc<StdMutex<HashMap<String, oneshot::Sender<bool>>>>,
     forwarded_routes: ForwardedRoutes,
+}
+
+pub struct DeploymentCommandError {
+    pub message: String,
+    pub stdout: String,
+    pub stderr: String,
+}
+
+impl DeploymentCommandError {
+    fn new(message: impl Into<String>, stdout: &[u8], stderr: &[u8]) -> Self {
+        Self {
+            message: message.into(),
+            stdout: String::from_utf8_lossy(stdout).into_owned(),
+            stderr: String::from_utf8_lossy(stderr).into_owned(),
+        }
+    }
 }
 
 impl SessionManager {
@@ -278,6 +298,36 @@ impl SessionManager {
         Ok(summary)
     }
 
+    pub async fn connect_wait(
+        self: &Arc<Self>,
+        input: ConnectInput,
+        timeout: Duration,
+        cancelled: &AtomicBool,
+    ) -> Result<SessionSummary, String> {
+        let summary = self.connect(input)?;
+        let active = self.get(&summary.id)?;
+        let deadline = tokio::time::Instant::now() + timeout;
+        loop {
+            if cancelled.load(Ordering::Relaxed) {
+                let _ = self.disconnect(&summary.id).await;
+                return Err("已取消".into());
+            }
+            let current = active.summary();
+            match current.status {
+                SessionStatus::Connected => return Ok(current),
+                SessionStatus::Error | SessionStatus::Disconnected => {
+                    return Err(current.error.unwrap_or("自动连接失败".into()));
+                }
+                SessionStatus::Connecting => {}
+            }
+            if tokio::time::Instant::now() >= deadline {
+                let _ = self.disconnect(&summary.id).await;
+                return Err("自动连接超时".into());
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+    }
+
     async fn establish(
         self: &Arc<Self>,
         active: Arc<ActiveSession>,
@@ -305,7 +355,7 @@ impl SessionManager {
                 .clone()
                 .or_else(|| self.db.get_credential(&jump.id));
             let mut jump_handle = self
-                .open_connection(&active.summary().id, &jump, None)
+                .open_connection(&active.summary().id, &jump, None, input.non_interactive)
                 .await
                 .context("跳板机连接失败")?;
             self.authenticate(&mut jump_handle, &jump, jump_credential.as_deref())
@@ -326,7 +376,12 @@ impl SessionManager {
                     0,
                 )
                 .await?;
-            *active.jump_handle.lock().await = Some(jump_handle);
+            let mut jump_slot = active.jump_handle.lock().await;
+            if active.closing.load(Ordering::Acquire) {
+                return Err(anyhow!("连接已取消"));
+            }
+            *jump_slot = Some(jump_handle);
+            drop(jump_slot);
             Box::pin(channel.into_stream())
         } else {
             let stream = tokio::time::timeout(
@@ -346,7 +401,12 @@ impl SessionManager {
             .clone()
             .or_else(|| self.db.get_credential(&active.bookmark.id));
         let mut handle = self
-            .open_connection(&active.summary().id, &active.bookmark, Some(transport))
+            .open_connection(
+                &active.summary().id,
+                &active.bookmark,
+                Some(transport),
+                input.non_interactive,
+            )
             .await?;
         self.authenticate(&mut handle, &active.bookmark, credential.as_deref())
             .await?;
@@ -368,14 +428,17 @@ impl SessionManager {
             .await?;
         channel.request_shell(true).await?;
         let (reader, writer) = channel.split();
+        if active.closing.load(Ordering::Acquire) {
+            return Err(anyhow!("连接已取消"));
+        }
         *active.handle.lock().await = Some(handle);
         *shell = Some(writer);
-        drop(shell);
         active.set_summary(SessionStatus::Connected, None);
         self.db
             .mark_connected(&active.bookmark.id)
             .map_err(|error| anyhow!(error))?;
         self.emit(AppEvent::Session(active.summary()));
+        drop(shell);
         let manager = self.clone();
         tauri::async_runtime::spawn(async move {
             manager.read_terminal(active, reader).await;
@@ -388,6 +451,7 @@ impl SessionManager {
         session_id: &str,
         bookmark: &Bookmark,
         stream: Option<Transport>,
+        non_interactive: bool,
     ) -> anyhow::Result<client::Handle<ClientHandler>> {
         let config = client::Config {
             inactivity_timeout: Some(Duration::from_secs(20)),
@@ -405,6 +469,7 @@ impl SessionManager {
             db: self.db.clone(),
             decisions: self.decisions.clone(),
             forwarded_routes: self.forwarded_routes.clone(),
+            non_interactive,
         };
         match stream {
             Some(stream) => client::connect_stream(Arc::new(config), stream, handler).await,
@@ -727,6 +792,95 @@ impl SessionManager {
         *active.sftp.lock().await = Some(sftp.clone());
         Ok(sftp)
     }
+
+    pub async fn execute_deployment_command(
+        &self,
+        id: &str,
+        command: &str,
+        cancelled: &AtomicBool,
+    ) -> Result<(u32, String, String), DeploymentCommandError> {
+        let active = self
+            .get(id)
+            .map_err(|e| DeploymentCommandError::new(e, &[], &[]))?;
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(30 * 60);
+        let mut channel = tokio::time::timeout(Duration::from_secs(20), async {
+            let handle = active.handle.lock().await;
+            let channel = handle
+                .as_ref()
+                .ok_or_else(|| DeploymentCommandError::new("SSH 会话未连接", &[], &[]))?
+                .channel_open_session()
+                .await
+                .map_err(|e| DeploymentCommandError::new(e.to_string(), &[], &[]))?;
+            Ok::<_, DeploymentCommandError>(channel)
+        })
+        .await
+        .map_err(|_| DeploymentCommandError::new("打开远端命令通道超时", &[], &[]))??;
+        let (cols, rows) = *active
+            .terminal_size
+            .lock()
+            .map_err(|_| DeploymentCommandError::new("终端尺寸锁已损坏", &[], &[]))?;
+        tokio::time::timeout(
+            Duration::from_secs(20),
+            channel.request_pty(true, "xterm-256color", cols, rows, 0, 0, &[]),
+        )
+        .await
+        .map_err(|_| DeploymentCommandError::new("分配部署伪终端超时", &[], &[]))?
+        .map_err(|error| {
+            DeploymentCommandError::new(format!("远端拒绝部署伪终端：{error}"), &[], &[])
+        })?;
+        tokio::time::timeout(Duration::from_secs(20), channel.exec(true, command))
+            .await
+            .map_err(|_| DeploymentCommandError::new("启动远端命令超时", &[], &[]))?
+            .map_err(|e| DeploymentCommandError::new(e.to_string(), &[], &[]))?;
+        let mut stdout = Vec::new();
+        let mut stderr = Vec::new();
+        let mut exit_code = None;
+        loop {
+            if cancelled.load(Ordering::Relaxed) {
+                let _ = channel.close().await;
+                return Err(DeploymentCommandError::new("已取消", &stdout, &stderr));
+            }
+            let message = tokio::select! {
+                value = channel.wait() => value,
+                _ = tokio::time::sleep_until(deadline) => {
+                    let _ = channel.close().await;
+                    return Err(DeploymentCommandError::new("远端命令超过 30 分钟", &stdout, &stderr));
+                }
+                _ = tokio::time::sleep(Duration::from_millis(200)) => { continue; }
+            };
+            match message {
+                Some(ChannelMsg::Data { data }) => {
+                    let count = (64 * 1024usize)
+                        .saturating_sub(stdout.len())
+                        .min(data.len());
+                    stdout.extend_from_slice(&data[..count]);
+                }
+                Some(ChannelMsg::ExtendedData { data, .. }) => {
+                    let count = (64 * 1024usize)
+                        .saturating_sub(stderr.len())
+                        .min(data.len());
+                    stderr.extend_from_slice(&data[..count]);
+                }
+                Some(ChannelMsg::ExitStatus { exit_status }) => exit_code = Some(exit_status),
+                Some(ChannelMsg::ExitSignal { error_message, .. }) => {
+                    return Err(DeploymentCommandError::new(
+                        format!("远端命令被终止：{error_message}"),
+                        &stdout,
+                        &stderr,
+                    ));
+                }
+                Some(_) => {}
+                None => break,
+            }
+        }
+        Ok((
+            exit_code.ok_or_else(|| {
+                DeploymentCommandError::new("远端命令没有返回退出码", &stdout, &stderr)
+            })?,
+            String::from_utf8_lossy(&stdout).into_owned(),
+            String::from_utf8_lossy(&stderr).into_owned(),
+        ))
+    }
     pub async fn direct_tcpip(
         &self,
         id: &str,
@@ -966,51 +1120,6 @@ impl SessionManager {
                 Err(RemoteExecError::Timeout)
             }
         }
-    }
-    pub async fn remote_tree(
-        &self,
-        id: &str,
-        root: &str,
-    ) -> Result<HashMap<String, DirectoryEntry>, String> {
-        let sftp = self.sftp(id).await?;
-        let mut result = HashMap::new();
-        let mut pending = vec![(root.trim_end_matches('/').to_string(), String::new())];
-        while let Some((directory, prefix)) = pending.pop() {
-            for entry in sftp
-                .read_dir(if directory.is_empty() {
-                    "/".to_string()
-                } else {
-                    directory.clone()
-                })
-                .await
-                .map_err(|e| e.to_string())?
-            {
-                let metadata = entry.metadata();
-                if metadata.is_symlink() {
-                    return Err(format!("暂不支持部署符号链接：{}", entry.path()));
-                }
-                let relative = if prefix.is_empty() {
-                    entry.file_name()
-                } else {
-                    format!("{prefix}/{}", entry.file_name())
-                };
-                if metadata.is_dir() {
-                    pending.push((entry.path(), relative));
-                } else if metadata.is_regular() {
-                    result.insert(
-                        relative,
-                        DirectoryEntry {
-                            name: entry.file_name(),
-                            path: entry.path(),
-                            kind: EntryKind::File,
-                            size: metadata.size,
-                            modified_at: metadata.mtime.map(|value| value as i64 * 1000),
-                        },
-                    );
-                }
-            }
-        }
-        Ok(result)
     }
     pub async fn create_remote_directory(&self, id: &str, path: String) -> Result<(), String> {
         self.sftp(id)

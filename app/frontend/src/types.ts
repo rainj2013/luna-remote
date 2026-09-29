@@ -121,17 +121,51 @@ export interface DeploymentProfile {
   id: string
   bookmarkId: string
   name: string
-  localDirectory: string
+  workspace: string
+  selection: { included: string[]; excluded: string[] }
   remoteDirectory: string
-  deleteExtraneous: boolean
+  archiveEnabled: boolean
+  archiveFormat: 'zip' | 'tarGz'
+  shellTemplate: string
+  shell: 'sh' | 'bash'
+  confirmManual: boolean
+  schedule: { enabled: boolean; dailyTime: string }
 }
 
-export interface DeploymentDiffEntry {
+export interface DeploymentFile {
   relativePath: string
-  localPath?: string
-  remotePath: string
-  status: 'new' | 'changed' | 'same' | 'remote-only'
-  size?: number
+  size: number
+  sha256: string
+}
+
+export interface DeploymentPreview {
+  files: DeploymentFile[]
+  totalSize: number
+  remoteTargetDirectory: string
+  archiveFileName?: string
+  commandTemplate: string
+  commandPreview: string
+}
+
+export interface DeploymentRun {
+  id: string
+  deploymentId: string
+  bookmarkId: string
+  triggerType: 'manual' | 'scheduled'
+  startedAt: string
+  finishedAt?: string
+  status: string
+  selectedFileCount: number
+  archiveEnabled: boolean
+  archiveSize?: number
+  manifestSha256?: string
+  remoteDestinationDir: string
+  commandExitCode?: number
+  stdout: string
+  stderr: string
+  error?: string
+  manifest?: string
+  commandLine: string
 }
 
 export type TerminalBackgroundFit = 'cover' | 'contain' | 'stretch' | 'tile'
@@ -383,8 +417,14 @@ export interface AppApi {
     list(bookmarkId: string): Promise<DeploymentProfile[]>
     save(profile: DeploymentProfile): Promise<DeploymentProfile>
     remove(id: string): Promise<void>
-    preview(id: string, sessionId: string): Promise<DeploymentDiffEntry[]>
-    execute(id: string, sessionId: string): Promise<TransferTask[]>
+    tree(workspace: string, path: string): Promise<DirectoryEntry[]>
+    preview(id: string, sessionId?: string): Promise<DeploymentPreview>
+    execute(id: string, sessionId?: string, archiveFileName?: string): Promise<DeploymentRun>
+    confirm(runId: string): Promise<DeploymentRun>
+    cancel(runId: string): Promise<void>
+    runsList(deploymentId: string): Promise<DeploymentRun[]>
+    runGet(id: string): Promise<DeploymentRun | null>
+    runsRemove(ids: string[]): Promise<void>
   }
   tunnels: {
     listProfiles(bookmarkId: string): Promise<PortForwardProfile[]>
@@ -402,7 +442,7 @@ export interface AppApi {
     saveSettings(settings: AiSettingsInput): Promise<AiSettings>
     deleteApiKey(): Promise<AiSettings>
     testSettings(settings: AiSettingsInput): Promise<void>
-    generate(requirement: string, shell: AiShell, terminalContext?: string, redactTerminalContext?: boolean): Promise<AiCommandSuggestion>
+    generate(requirement: string, shell: AiShell, terminalContext?: string, redactTerminalContext?: boolean, allowMultiline?: boolean): Promise<AiCommandSuggestion>
     analyze(command: string): Promise<AiRiskAssessment>
     listHistory(): Promise<AiCommandHistoryEntry[]>
     clearHistory(): Promise<void>

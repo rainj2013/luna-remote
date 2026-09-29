@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { ArrowRight, Bookmark as BookmarkIcon, Bot, Check, ChevronDown, ChevronRight, CircleHelp, CirclePlus, Copy, Download, Edit3, ExternalLink, Eye, EyeOff, FileInput, FileJson2, Folder, FolderOpen, FolderPlus, GripVertical, History as HistoryIcon, Image as ImageIcon, Info, KeyRound, Languages, Minus, Monitor, Moon, Network, Palette, PanelLeftClose, PanelLeftOpen, Play, Plug, Power, Rocket, RotateCcw, Search, Send, Server, Settings as SettingsIcon, ShieldAlert, Square, SquareTerminal, Star, Sun, Trash2, Upload, WandSparkles, X } from 'lucide-react'
-import { BUNDLED_TERMINAL_FONT, DEFAULT_AI_SETTINGS, DEFAULT_TERMINAL_SETTINGS, type AiCommandHistoryEntry, type AiCommandSuggestion, type AiProvider, type AiRawExchange, type AiRiskAssessment, type AiSettings, type AiSettingsInput, type AiShell, type AiThinkingMode, type AppEvent, type AppIconId, type AppIconSettings, type AppLanguage, type Bookmark, type BookmarkInput, type ConflictResolution, type ConnectInput, type DeploymentDiffEntry, type DeploymentProfile, type HostKeyPrompt, type PortForwardProfile, type SessionStatus, type SshConfigPreview, type TerminalSettings, type TransferTask, type TunnelSummary, type UiTheme } from './types'
+import { ArrowRight, Bookmark as BookmarkIcon, Bot, Check, ChevronDown, ChevronRight, CircleHelp, CirclePlus, Copy, Download, Edit3, ExternalLink, Eye, EyeOff, File, FileInput, FileJson2, Folder, FolderOpen, FolderPlus, GripVertical, History as HistoryIcon, Image as ImageIcon, Info, KeyRound, Languages, Minus, Monitor, Moon, Network, Palette, PanelLeftClose, PanelLeftOpen, Play, Plug, Power, Rocket, RotateCcw, Search, Send, Server, Settings as SettingsIcon, ShieldAlert, Square, SquareTerminal, Star, Sun, Trash2, Upload, WandSparkles, X } from 'lucide-react'
+import { BUNDLED_TERMINAL_FONT, DEFAULT_AI_SETTINGS, DEFAULT_TERMINAL_SETTINGS, type AiCommandHistoryEntry, type AiCommandSuggestion, type AiProvider, type AiRawExchange, type AiRiskAssessment, type AiSettings, type AiSettingsInput, type AiShell, type AiThinkingMode, type AppEvent, type AppIconId, type AppIconSettings, type AppLanguage, type Bookmark, type BookmarkInput, type ConflictResolution, type ConnectInput, type DeploymentPreview, type DeploymentRun, type DeploymentProfile, type DirectoryEntry, type HostKeyPrompt, type PortForwardProfile, type SessionStatus, type SshConfigPreview, type TerminalSettings, type TransferTask, type TunnelSummary, type UiTheme } from './types'
 import { TerminalPane, type TerminalPaneHandle } from './components/TerminalPane'
 import { SftpPane } from './components/SftpPane'
 import { HelpDialog } from './components/HelpDialog'
@@ -27,6 +27,11 @@ const aiTerminalContextLines = 100
 const aiTerminalContextChars = 16_000
 const repositoryUrl = 'https://github.com/rainj2013/luna-remote'
 const appIconMessageKeys: Record<AppIconId, MessageKey> = { ssh: 'appIcon.ssh', classic: 'appIcon.classic', neon: 'appIcon.neon', light: 'appIcon.light' }
+const deploymentVariables: ReadonlyArray<{ name: string; descriptionKey: MessageKey }> = [
+  { name: 'LUNA_TARGET_DIR', descriptionKey: 'deployment.variable.target' },
+  { name: 'LUNA_FILE_NAME', descriptionKey: 'deployment.variable.fileName' },
+  { name: 'LUNA_FILE_PATH', descriptionKey: 'deployment.variable.filePath' },
+]
 
 function primaryFontName(fontFamily: string): string {
   return fontFamily.split(',')[0]?.trim().replace(/^["']|["']$/g, '') || 'JetBrains Mono'
@@ -142,6 +147,28 @@ export function App(): React.JSX.Element {
     const preventBrowserMenu = (event: MouseEvent): void => event.preventDefault()
     document.addEventListener('contextmenu', preventBrowserMenu)
     return () => document.removeEventListener('contextmenu', preventBrowserMenu)
+  }, [])
+
+  useEffect(() => {
+    if (window.api.platform !== 'darwin') return
+    document.documentElement.spellcheck = false
+    const disableTextCorrections = (target: EventTarget | null): void => {
+      if (!(target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement || target instanceof HTMLElement && target.isContentEditable)) return
+      target.setAttribute('spellcheck', 'false')
+      target.setAttribute('autocorrect', 'off')
+      target.setAttribute('autocapitalize', 'off')
+    }
+    const onFocus = (event: FocusEvent): void => disableTextCorrections(event.target)
+    const configureTree = (node: Node): void => {
+      disableTextCorrections(node)
+      if (node instanceof Element) node.querySelectorAll('input, textarea, [contenteditable]').forEach(disableTextCorrections)
+    }
+    configureTree(document.body)
+    const observer = new MutationObserver((records) => records.forEach((record) => record.addedNodes.forEach(configureTree)))
+    observer.observe(document.body, { childList: true, subtree: true })
+    disableTextCorrections(document.activeElement)
+    document.addEventListener('focusin', onFocus, true)
+    return () => { observer.disconnect(); document.removeEventListener('focusin', onFocus, true) }
   }, [])
 
   useEffect(() => {
@@ -699,10 +726,10 @@ export function App(): React.JSX.Element {
     {authRequest && <AuthDialog bookmark={authRequest.bookmark} jumpBookmark={authRequest.bookmark.jumpBookmarkId ? bookmarkMap.get(authRequest.bookmark.jumpBookmarkId) : undefined} onClose={() => setAuthRequest(null)} onConnect={(credentials) => void connect(authRequest.bookmark, credentials, authRequest.target)} />}
     {hostPrompts[0] && <HostKeyDialog prompt={hostPrompts[0]} onDecision={(accept) => { const prompt = hostPrompts[0]; if (!prompt) return; window.api.sessions.hostKeyDecision(prompt.sessionId, accept); setHostPrompts((current) => current.filter((item) => item !== prompt)) }} />}
     {conflict && <ConflictDialog conflict={conflict} onDecision={(resolution, apply) => { window.api.transfers.resolveConflict(conflict.taskId, resolution, apply); setConflict(null) }} />}
-    {settingsDialog && <SettingsDialog initialSection={settingsInitialSection} settings={terminalSettings} backgroundImage={terminalBackground} appIcons={appIcons} uiTheme={uiTheme} appLanguage={savedLanguage} aiSettings={aiSettings} onAiSettingsChange={setAiSettings} onThemePreview={setUiThemePreview} onLanguagePreview={setLanguage} onClose={() => { setUiThemePreview(null); setLanguage(savedLanguage); setSettingsDialog(false) }} onSave={(settings, image, icon, theme, appLanguage, ai) => void saveSettings(settings, image, icon, theme, appLanguage, ai)} onConfirm={confirmAction} onNotice={(message) => showToast(message, 'success')} onError={showError} />}
+    {settingsDialog && <SettingsDialog initialSection={settingsInitialSection} settings={terminalSettings} backgroundImage={terminalBackground} appIcons={appIcons} uiTheme={uiTheme} appLanguage={savedLanguage} aiSettings={aiSettings} onAiSettingsChange={setAiSettings} onThemePreview={setUiThemePreview} onLanguagePreview={setLanguage} onClose={() => { setUiThemePreview(null); setLanguage(savedLanguage); setSettingsDialog(false) }} onSave={(settings, image, icon, theme, appLanguage, ai) => void saveSettings(settings, image, icon, theme, appLanguage, ai)} onConfirm={confirmAction} onNotice={(message) => showToast(message, 'success')} onError={showError} raised={deploymentDialog} />}
     {aiDialog && activeBookmark && activeTab && <AiCommandDialog bookmark={activeBookmark} sessionId={activeTab.sessionId} connected={activeTab.status === 'connected'} settings={aiSettings} getTerminalContext={() => terminalPaneRefs.current.get(activeTab.key)?.getRecentLines(aiTerminalContextLines, aiTerminalContextChars) ?? ''} onSettingsChange={setAiSettings} onSettings={() => { setAiDialog(false); openSettings('ai') }} onClose={() => setAiDialog(false)} onError={showError} />}
     {helpDialog && <HelpDialog onClose={() => setHelpDialog(false)} />}
-    {deploymentDialog && activeBookmark && activeTab?.sessionId && <DeploymentDialog bookmark={activeBookmark} sessionId={activeTab.sessionId} onClose={() => setDeploymentDialog(false)} onConfirm={confirmAction} onError={showError} />}
+    {deploymentDialog && activeBookmark && activeTab?.sessionId && <DeploymentDialog bookmark={activeBookmark} sessionId={activeTab.sessionId} aiSettings={aiSettings} onOpenAiSettings={() => openSettings('ai')} onClose={() => setDeploymentDialog(false)} onConfirm={confirmAction} onError={showError} />}
     {tunnelDialog && activeBookmark && activeTab?.sessionId && <TunnelDialog bookmark={activeBookmark} sessionId={activeTab.sessionId} onClose={() => setTunnelDialog(false)} onError={showError} />}
     {importPreview && <SshConfigImportDialog preview={importPreview} onClose={() => setImportPreview(null)} onImported={async () => { setImportPreview(null); await reloadSidebarData() }} onError={showError} />}
     {confirmation && <ConfirmationDialog confirmation={confirmation} onDecision={resolveConfirmation} />}
@@ -985,47 +1012,306 @@ function TunnelDialog({ bookmark, sessionId, onClose, onError }: { bookmark: Boo
   </div></Modal>
 }
 
-function DeploymentDialog({ bookmark, sessionId, onClose, onConfirm, onError }: { bookmark: Bookmark; sessionId: string; onClose(): void; onConfirm: ConfirmAction; onError(message: string): void }): React.JSX.Element {
+interface DeploymentPreviewNode {
+  name: string
+  path: string
+  file?: DeploymentPreview['files'][number]
+  children: Map<string, DeploymentPreviewNode>
+}
+
+function DeploymentPreviewBranch({ node }: { node: DeploymentPreviewNode }): React.JSX.Element {
+  const [expanded, setExpanded] = useState(true)
+  const children = [...node.children.values()].sort((a, b) => Number(b.children.size > 0) - Number(a.children.size > 0) || a.name.localeCompare(b.name))
+  if (children.length === 0) return <li><div className="deployment-preview-tree-row" title={node.path}><span className="deployment-preview-chevron-spacer" /><File size={15} /><span>{node.name}</span><small>{node.file?.size ?? 0} B</small></div></li>
+  return <li><button type="button" className="deployment-preview-tree-row deployment-preview-folder" onClick={() => setExpanded((value) => !value)} aria-expanded={expanded}>{expanded ? <ChevronDown size={15} /> : <ChevronRight size={15} />}<Folder size={15} /><span>{node.name}</span></button>{expanded && <ul>{children.map((child) => <DeploymentPreviewBranch key={child.path} node={child} />)}</ul>}</li>
+}
+
+function DeploymentPreviewTree({ files, root, archive }: { files: DeploymentPreview['files']; root: string; archive: boolean }): React.JSX.Element {
+  const nodes = useMemo(() => {
+    const roots = new Map<string, DeploymentPreviewNode>()
+    for (const file of files) {
+      let siblings = roots
+      let path = ''
+      for (const part of file.relativePath.split('/')) {
+        path = path ? `${path}/${part}` : part
+        let node = siblings.get(part)
+        if (!node) {
+          node = { name: part, path, children: new Map() }
+          siblings.set(part, node)
+        }
+        if (path === file.relativePath) node.file = file
+        siblings = node.children
+      }
+    }
+    return [...roots.values()].sort((a, b) => Number(b.children.size > 0) - Number(a.children.size > 0) || a.name.localeCompare(b.name))
+  }, [files])
+  return <div className="deployment-preview-tree"><div className="deployment-preview-tree-root">{archive ? <File size={16} /> : <FolderOpen size={16} />}<strong title={root}>{root}</strong>{archive && <small>{root.endsWith('.tar.gz') ? 'tar.gz' : 'ZIP'}</small>}</div><ul>{nodes.map((node) => <DeploymentPreviewBranch key={node.path} node={node} />)}</ul></div>
+}
+
+function DeploymentAiComposer({ archiveEnabled, archiveFormat, shell, settings, onUse, onSettings }: { archiveEnabled: boolean; archiveFormat: DeploymentProfile['archiveFormat']; shell: DeploymentProfile['shell']; settings: AiSettings; onUse(command: string): void; onSettings(): void }): React.JSX.Element {
   const { t } = useI18n()
-  const empty = (): DeploymentProfile => ({ id: crypto.randomUUID(), bookmarkId: bookmark.id, name: '', localDirectory: '', remoteDirectory: '/', deleteExtraneous: false })
+  const [requirement, setRequirement] = useState('')
+  const [suggestion, setSuggestion] = useState<AiCommandSuggestion | null>(null)
+  const [loading, setLoading] = useState(false)
+  const [error, setError] = useState('')
+  useEffect(() => { setSuggestion(null) }, [archiveEnabled, archiveFormat, shell])
+  const variableContext = deploymentVariables.map((variable) => variable.name + ': ' + t(variable.descriptionKey)).join('\n')
+  const generate = async (): Promise<void> => {
+    if (!requirement.trim()) return
+    const context = [
+      `Generate a readable ${shell === 'bash' ? 'Bash' : 'POSIX sh'} script for a deployment Shell template. Put separate steps on separate lines and indent control blocks. It runs remotely after the upload, inside ${shell} -lc. Do not include another ${shell} -lc wrapper.`,
+      'The SSH execution channel allocates a PTY but does not provide interactive password input. If sudo is needed, use sudo -n so a password requirement fails immediately. For a privileged Bash-specific command or redirection, put the whole privileged operation inside sudo -n bash -lc, and do not assume sudo preserves LUNA_* environment variables.',
+      'The following deployment variables are available as environment variables. Their descriptions are part of the deployment UI and apply to this command:',
+      variableContext,
+      'Reference variables literally as quoted Shell expansions, for example "${LUNA_TARGET_DIR}" and "${LUNA_FILE_PATH}". Their values are supplied at execution time.',
+      archiveEnabled ? `Upload mode: one ${archiveFormat === 'tarGz' ? 'tar.gz' : 'ZIP'} file. LUNA_FILE_NAME and LUNA_FILE_PATH refer to that archive. Its name is the workspace root directory followed by _yyyyMMddHHmmss and the format extension.` : 'Upload mode: individual files. When multiple files are selected, LUNA_FILE_NAME and LUNA_FILE_PATH are empty.',
+      'Do not assume any concrete remote path. Generate the command only; do not execute it.',
+      'User request: ' + requirement.trim(),
+    ].join('\n')
+    setLoading(true); setError(''); setSuggestion(null)
+    try { setSuggestion(await window.api.ai.generate(context, 'linux', undefined, false, true)) }
+    catch (generateError) { setError(errorMessage(generateError)) }
+    finally { setLoading(false) }
+  }
+  const riskText = suggestion ? ({ low: t('common.lowRisk'), medium: t('common.caution'), high: t('common.highRisk') } as const)[suggestion.riskLevel] : ''
+  return <div className="deployment-ai-panel">
+    {!settings.model.trim() ? <div className="deployment-ai-unconfigured"><span>{t('app.noAiModelConfigured')}</span><button type="button" className="secondary-button" onClick={onSettings}><SettingsIcon size={15} />{t('app.openAiSettings')}</button></div> : <>
+      <label>{t('deployment.aiPrompt')}<textarea rows={3} maxLength={1800} value={requirement} placeholder={t('deployment.aiPlaceholder')} onChange={(event) => setRequirement(event.target.value)} onKeyDown={(event) => { if ((event.ctrlKey || event.metaKey) && event.key === 'Enter') { event.preventDefault(); void generate() } }} /></label>
+      <div className="deployment-ai-actions"><span>{t('deployment.aiHint')}</span><button type="button" className="primary-button" disabled={loading || !requirement.trim()} onClick={() => void generate()}><WandSparkles size={15} />{loading ? t('app.generating') : t('app.generateCommand')}</button></div>
+      <details className="deployment-preview-details deployment-ai-context"><summary>{t('deployment.aiContext')}</summary><pre className="deployment-code">{variableContext}</pre></details>
+      {error && <div className="ai-error" role="alert">{error}</div>}
+      {suggestion && <div className="deployment-ai-result"><div className="ai-result-heading"><div><strong>{t('app.generatedResult')}</strong><span className={'ai-risk ' + suggestion.riskLevel}>{riskText}</span></div></div><pre className="deployment-code">{suggestion.command}</pre>{suggestion.explanation && <p>{suggestion.explanation}</p>}{suggestion.assumptions.length > 0 && <details className="ai-notes"><summary>{t('app.assumptions')} <span>{suggestion.assumptions.length}</span></summary><ul>{suggestion.assumptions.map((item) => <li key={item}>{item}</li>)}</ul></details>}{suggestion.warnings.length > 0 && <details className="ai-notes warning"><summary>{t('app.warnings')} <span>{suggestion.warnings.length}</span></summary><ul>{suggestion.warnings.map((item) => <li key={item}>{item}</li>)}</ul></details>}<button type="button" className="secondary-button" onClick={() => onUse(suggestion.command)}>{t('deployment.aiUse')}</button></div>}
+    </>}
+  </div>
+}
+
+function DeploymentDialog({ bookmark, sessionId, aiSettings, onOpenAiSettings, onClose, onConfirm, onError }: { bookmark: Bookmark; sessionId: string; aiSettings: AiSettings; onOpenAiSettings(): void; onClose(): void; onConfirm: ConfirmAction; onError(message: string): void }): React.JSX.Element {
+  const { t } = useI18n()
+  const shellEditorRef = useRef<HTMLTextAreaElement>(null)
+  const previewRef = useRef<HTMLElement>(null)
+  const resultRef = useRef<HTMLElement>(null)
+  const historyResultRef = useRef<HTMLElement>(null)
+  const empty = (): DeploymentProfile => ({ id: crypto.randomUUID(), bookmarkId: bookmark.id, name: '', workspace: '', selection: { included: [], excluded: [] }, remoteDirectory: '/', archiveEnabled: true, archiveFormat: 'zip', shellTemplate: '', shell: 'sh', confirmManual: true, schedule: { enabled: false, dailyTime: '09:00' } })
   const [profiles, setProfiles] = useState<DeploymentProfile[]>([])
   const [profile, setProfile] = useState<DeploymentProfile>(empty)
-  const [diff, setDiff] = useState<DeploymentDiffEntry[] | null>(null)
-  const [loading, setLoading] = useState(false)
+  const [view, setView] = useState<'deploy' | 'history'>('deploy')
+  const [tree, setTree] = useState<Record<string, DirectoryEntry[]>>({})
+  const [expanded, setExpanded] = useState<Set<string>>(new Set())
+  const [previewData, setPreviewData] = useState<DeploymentPreview | null>(null)
+  const [runs, setRuns] = useState<DeploymentRun[]>([])
+  const [run, setRun] = useState<DeploymentRun | null>(null)
+  const [historyRun, setHistoryRun] = useState<DeploymentRun | null>(null)
+  const [selectedRuns, setSelectedRuns] = useState<Set<string>>(new Set())
+  const [aiComposerOpen, setAiComposerOpen] = useState(false)
+  const [busy, setBusy] = useState(false)
   useEffect(() => { void window.api.deployments.list(bookmark.id).then((items) => { setProfiles(items); if (items[0]) setProfile(items[0]) }).catch((error) => onError(errorMessage(error))) }, [bookmark.id])
-  const set = <K extends keyof DeploymentProfile>(key: K, value: DeploymentProfile[K]): void => { setProfile((current) => ({ ...current, [key]: value })); setDiff(null) }
+  useEffect(() => {
+    setTree({}); setExpanded(new Set())
+    if (profile.workspace) void window.api.deployments.tree(profile.workspace, '.').then((items) => setTree({ '.': items })).catch((error) => onError(errorMessage(error)))
+  }, [profile.workspace])
+  useEffect(() => {
+    if (!profiles.some((item) => item.id === profile.id)) { setRuns([]); return }
+    const load = (): void => { void window.api.deployments.runsList(profile.id).then(setRuns).catch((error) => onError(errorMessage(error))) }
+    load(); const timer = window.setInterval(load, 1500)
+    return () => window.clearInterval(timer)
+  }, [profile.id, profiles.length])
+  const set = <K extends keyof DeploymentProfile>(key: K, value: DeploymentProfile[K]): void => { setProfile((current) => ({ ...current, [key]: value })); setPreviewData(null) }
+  const insertShellVariable = (name: string): void => {
+    const editor = shellEditorRef.current
+    const start = editor?.selectionStart ?? profile.shellTemplate.length
+    const end = editor?.selectionEnd ?? start
+    const before = profile.shellTemplate[start - 1]
+    const after = profile.shellTemplate[end]
+    const leadingSpace = before && !/\s/.test(before) && !'=([{;|&'.includes(before) ? ' ' : ''
+    const trailingSpace = after && !/\s/.test(after) && !')]}:;,|&'.includes(after) ? ' ' : ''
+    const insertion = leadingSpace + '"${' + name + '}"' + trailingSpace
+    set('shellTemplate', profile.shellTemplate.slice(0, start) + insertion + profile.shellTemplate.slice(end))
+    window.requestAnimationFrame(() => {
+      shellEditorRef.current?.focus()
+      shellEditorRef.current?.setSelectionRange(start + insertion.length, start + insertion.length)
+    })
+  }
   const save = async (): Promise<DeploymentProfile | undefined> => {
+    const previous = profiles.find((item) => item.id === profile.id)
+    if (profile.schedule.enabled && (!previous || JSON.stringify(previous) !== JSON.stringify(profile))) {
+      const accepted = await onConfirm({ title: t('deployment.schedule'), message: t('deployment.scheduleRisk'), kind: 'warning', confirmLabel: t('deployment.save') })
+      if (!accepted) return undefined
+    }
     try {
       const saved = await window.api.deployments.save(profile)
       setProfile(saved); setProfiles((current) => [saved, ...current.filter((item) => item.id !== saved.id)])
       return saved
     } catch (error) { onError(errorMessage(error)); return undefined }
   }
+  const loadTree = async (relative: string): Promise<void> => {
+    if (tree[relative]) return
+    try { const items = await window.api.deployments.tree(profile.workspace, relative); setTree((current) => ({ ...current, [relative]: items })) }
+    catch (error) { onError(errorMessage(error)) }
+  }
+  const toggleFolder = (relative: string): void => {
+    setExpanded((current) => { const next = new Set(current); if (next.has(relative)) next.delete(relative); else next.add(relative); return next })
+    void loadTree(relative)
+  }
+  const covered = (relative: string, rules: string[]): boolean => rules.some((rule) => rule === '.' || relative === rule || relative.startsWith(`${rule}/`))
+  const selectionState = (relative: string, kind: DirectoryEntry['kind']): { checked: boolean; mixed: boolean } => {
+    const excluded = covered(relative, profile.selection.excluded)
+    const checked = !excluded && covered(relative, profile.selection.included)
+    const mixed = kind === 'directory' && (checked && profile.selection.excluded.some((rule) => rule.startsWith(`${relative}/`)) || !checked && profile.selection.included.some((rule) => rule.startsWith(`${relative}/`)))
+    return { checked, mixed }
+  }
+  const select = (relative: string, checked: boolean): void => {
+    setProfile((current) => {
+      let included = current.selection.included.filter((rule) => relative === '.' ? false : rule !== relative && !rule.startsWith(`${relative}/`))
+      let excluded = current.selection.excluded.filter((rule) => relative === '.' ? false : rule !== relative && !rule.startsWith(`${relative}/`))
+      if (checked) { excluded = excluded.filter((rule) => rule !== '.' && !(relative === rule || relative.startsWith(`${rule}/`))); included = [...included, relative] }
+      else if (covered(relative, current.selection.included)) excluded = [...excluded, relative]
+      return { ...current, selection: { included, excluded } }
+    })
+    setPreviewData(null)
+  }
+  const renderNodes = (parent: string): React.ReactNode => (tree[parent] ?? []).map((item) => {
+    const relative = parent === '.' ? item.name : `${parent}/${item.name}`
+    const folder = item.kind === 'directory'
+    const state = selectionState(relative, item.kind)
+    return <li className="deployment-tree-node" key={relative}><div className="deployment-tree-row">
+      {folder ? <button type="button" className="icon-button" title={expanded.has(relative) ? t('deployment.collapse') : t('deployment.expand')} aria-expanded={expanded.has(relative)} onClick={() => toggleFolder(relative)}>{expanded.has(relative) ? <ChevronDown size={14} /> : <ChevronRight size={14} />}</button> : <span className="deployment-tree-spacer" />}
+      <input type="checkbox" aria-label={relative} disabled={item.kind === 'symlink' || item.kind === 'other'} checked={state.checked} ref={(element) => { if (element) element.indeterminate = state.mixed }} onChange={(event) => select(relative, event.target.checked)} />
+      {folder ? <>{expanded.has(relative) ? <FolderOpen size={15} className="deployment-file-icon deployment-folder-icon" /> : <Folder size={15} className="deployment-file-icon deployment-folder-icon" />}<button type="button" className="deployment-tree-name" onClick={() => toggleFolder(relative)}>{item.name}</button></> : <><File size={15} className="deployment-file-icon" /><span className={item.kind === 'symlink' ? 'muted' : ''}>{item.name}{item.kind === 'symlink' ? ' ↗' : ''}</span></>}
+    </div>{folder && expanded.has(relative) && <ul className="deployment-tree-children">{renderNodes(relative)}</ul>}</li>
+  })
+  const refreshRuns = async (): Promise<void> => { setRuns(await window.api.deployments.runsList(profile.id)) }
   const preview = async (): Promise<void> => {
     const saved = await save(); if (!saved) return
-    setLoading(true)
-    try { setDiff(await window.api.deployments.preview(saved.id, sessionId)) }
+    setBusy(true)
+    try {
+      setPreviewData(await window.api.deployments.preview(saved.id)); setRun(null)
+      window.requestAnimationFrame(() => previewRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' }))
+    }
     catch (error) { onError(errorMessage(error)) }
-    finally { setLoading(false) }
+    finally { setBusy(false) }
   }
   const execute = async (): Promise<void> => {
-    if (!diff) return
-    const changed = diff.filter((item) => ['new', 'changed'].includes(item.status)).length
-    const removals = profile.deleteExtraneous ? diff.filter((item) => item.status === 'remote-only').length : 0
-    if (!await onConfirm({ title: t('app.confirmDeployment'), message: removals ? t('app.deployUploadAndDelete', { changed, removals }) : t('app.deployUploadOnly', { changed }), detail: removals ? t('app.remoteFilesAreDeletedOnlyAfterEveryUpload') : t('app.verifyTheDeploymentTargetAndDifferences'), kind: 'warning', confirmLabel: t('common.startDeployment') })) return
-    try { await window.api.deployments.execute(profile.id, sessionId); onClose() }
+    if (!previewData) return
+    setRun(null); setBusy(true)
+    try {
+      const next = await window.api.deployments.execute(profile.id, sessionId, previewData.archiveFileName)
+      setRun(next)
+      window.requestAnimationFrame(() => resultRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' }))
+      await refreshRuns()
+      if (next.status === 'failed') onError(t('deployment.failed', { error: next.error ?? '' }))
+    } catch (error) { onError(errorMessage(error)) }
+    finally { setBusy(false) }
+  }
+  const confirm = async (id: string): Promise<void> => {
+    setBusy(true)
+    try {
+      const next = await window.api.deployments.confirm(id)
+      if (view === 'history') { setHistoryRun(next); if (run?.id === id) setRun(next) }
+      else { setRun(next); if (historyRun?.id === id) setHistoryRun(next) }
+      window.requestAnimationFrame(() => (view === 'history' ? historyResultRef : resultRef).current?.scrollIntoView({ behavior: 'smooth', block: 'start' }))
+      await refreshRuns()
+      if (next.status === 'failed') onError(t('deployment.failed', { error: next.error ?? '' }))
+    }
+    catch (error) { onError(errorMessage(error)) }
+    finally { setBusy(false) }
+  }
+  const cancel = async (id: string): Promise<void> => {
+    try {
+      await window.api.deployments.cancel(id); await refreshRuns()
+      if (run?.id === id || historyRun?.id === id) {
+        const next = await window.api.deployments.runGet(id)
+        if (run?.id === id) setRun(next)
+        if (historyRun?.id === id) setHistoryRun(next)
+      }
+    }
     catch (error) { onError(errorMessage(error)) }
   }
-  const counts = diff ? Object.fromEntries(['new', 'changed', 'same', 'remote-only'].map((status) => [status, diff.filter((item) => item.status === status).length])) : {}
-  return <Modal title={t('app.deployToValue', { value0: bookmark.name })} onClose={onClose} wide><div className="deployment-dialog">
-    <div className="deployment-profile-bar"><select value={profile.id} onChange={(event) => { const selected = profiles.find((item) => item.id === event.target.value); if (selected) { setProfile(selected); setDiff(null) } }}><option value={profile.id}>{profiles.some((item) => item.id === profile.id) ? profile.name || t('common.unnamedProfile') : t('app.newDeploymentProfile')}</option>{profiles.filter((item) => item.id !== profile.id).map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select><button className="secondary-button" onClick={() => { setProfile(empty()); setDiff(null) }}><CirclePlus size={15} />{t('common.new')}</button>{profiles.some((item) => item.id === profile.id) && <button className="icon-button danger" title={t('app.deleteDeploymentProfile')} onClick={async () => { await window.api.deployments.remove(profile.id); const next = profiles.filter((item) => item.id !== profile.id); setProfiles(next); setProfile(next[0] ?? empty()); setDiff(null) }}><Trash2 size={15} /></button>}</div>
-    <div className="form-grid"><label>{t('app.profileName')}<input value={profile.name} onChange={(event) => set('name', event.target.value)} /></label><label>{t('app.localDirectory')}<div className="input-button"><input readOnly value={profile.localDirectory} /><button className="secondary-button" onClick={async () => { const path = await window.api.files.chooseLocalDirectory(); if (path) set('localDirectory', path) }}>{t('common.choose')}</button></div></label><label>{t('app.remoteDirectory')}<input value={profile.remoteDirectory} onChange={(event) => set('remoteDirectory', event.target.value)} /></label><label className="check-label"><input type="checkbox" checked={profile.deleteExtraneous} onChange={(event) => set('deleteExtraneous', event.target.checked)} />{t('app.deleteExtraRemoteFilesAfterAllUploadsSucceed')}</label></div>
-    {diff && <><div className="deployment-summary"><span>{t('common.new2')} {counts['new'] ?? 0}</span><span>{t('app.changed')} {counts['changed'] ?? 0}</span><span>{t('common.same')} {counts['same'] ?? 0}</span><span>{t('app.remoteOnly')} {counts['remote-only'] ?? 0}</span></div><div className="deployment-diff">{diff.filter((item) => item.status !== 'same').slice(0, 300).map((item) => <div key={`${item.status}:${item.relativePath}`}><span className={item.status}>{({ new: t('common.new2'), changed: t('app.update'), 'remote-only': t('common.remote'), same: t('common.same') } as const)[item.status]}</span><code>{item.relativePath}</code></div>)}</div></>}
-    <div className="dialog-actions"><button className="secondary-button" onClick={onClose}>{t('common.cancel')}</button><button className="secondary-button" disabled={loading} onClick={() => void preview()}>{loading ? t('app.comparing') : t('app.saveAndPreview')}</button><button className="primary-button" disabled={!diff || loading} onClick={() => void execute()}><Rocket size={15} />{t('common.startDeployment')}</button></div>
+  const statusText: Record<string, string> = { draft: t('deployment.status.draft'), preparing: t('deployment.status.preparing'), packaging: t('deployment.status.packaging'), uploading: t('deployment.status.uploading'), 'awaiting-confirmation': t('deployment.status.awaiting'), 'executing-command': t('deployment.status.executing'), succeeded: t('deployment.status.succeeded'), failed: t('deployment.status.failed'), cancelled: t('deployment.status.cancelled') }
+  const activeRun = runs.find((item) => !['succeeded', 'failed', 'cancelled'].includes(item.status))
+  const shownRun = run ?? activeRun ?? null
+  const switchProfile = (next: DeploymentProfile): void => { setProfile(next); setPreviewData(null); setRun(null); setHistoryRun(null); setRuns([]); setSelectedRuns(new Set()); setAiComposerOpen(false) }
+  const chooseWorkspace = async (): Promise<void> => { const path = await window.api.files.chooseLocalDirectory(); if (path) { setProfile((current) => ({ ...current, workspace: path, selection: { included: [], excluded: [] } })); setPreviewData(null) } }
+  const canSave = Boolean(profile.name.trim() && profile.workspace)
+  const canPreview = canSave && profile.selection.included.length > 0
+  const archiveDestination = previewData?.archiveFileName ? `${previewData.remoteTargetDirectory.replace(/\/$/, '')}/${previewData.archiveFileName}` : ''
+  const renderRunResult = (shownRun: DeploymentRun, elementRef: React.RefObject<HTMLElement | null>): React.JSX.Element => <section className="deployment-section deployment-result" ref={elementRef}>
+        <div className="deployment-result-heading"><strong aria-live="polite">{statusText[shownRun.status] ?? shownRun.status}</strong><time>{new Date(shownRun.startedAt).toLocaleString()}</time>{shownRun.commandExitCode !== undefined && shownRun.commandExitCode !== null && <span>{t('deployment.exitCode')}: {shownRun.commandExitCode}</span>}</div>
+        <code>{shownRun.remoteDestinationDir}</code>
+        {shownRun.error && <p className="deployment-result-error">{shownRun.error}</p>}
+        {shownRun.status === 'awaiting-confirmation' && <>{shownRun.commandLine && <pre className="deployment-code">{shownRun.commandLine}</pre>}<div className="dialog-actions"><button className="secondary-button" disabled={busy} onClick={() => void cancel(shownRun.id)}>{t('deployment.cancelCommand')}</button><button className="primary-button" disabled={busy} onClick={() => void confirm(shownRun.id)}>{t('deployment.confirmRun')}</button></div></>}
+        {(shownRun.commandExitCode !== undefined && shownRun.commandExitCode !== null || Boolean(shownRun.stdout) || Boolean(shownRun.stderr)) && <div className="deployment-shell-result">
+          <strong>{t('deployment.shellResult')}</strong>
+          <div className="deployment-copy-heading"><span>{t('deployment.output')}</span>{shownRun.stdout && <button className="text-button" onClick={() => void window.api.system.writeClipboard(shownRun.stdout)}>{t('deployment.copy')}</button>}</div>
+          <pre className="deployment-code">{shownRun.stdout || t('deployment.noOutput')}</pre>
+          {shownRun.stderr && <><div className="deployment-copy-heading"><span>{t('deployment.errorOutput')}</span><button className="text-button" onClick={() => void window.api.system.writeClipboard(shownRun.stderr)}>{t('deployment.copy')}</button></div><pre className="deployment-code">{shownRun.stderr}</pre></>}
+        </div>}
+        {shownRun.commandLine && shownRun.status !== 'awaiting-confirmation' && <details className="deployment-preview-details"><summary>{t('deployment.expandedCommand')}</summary><pre className="deployment-code">{shownRun.commandLine}</pre></details>}
+        {shownRun.manifest && <details className="deployment-preview-details"><summary>{t('deployment.manifest')}</summary><pre className="deployment-code">{shownRun.manifest}</pre></details>}
+      </section>
+  return <Modal title={t('deployment.title') + ' · ' + bookmark.name} onClose={onClose} wide className="deployment-modal" suppressContextMenu><div className="deployment-dialog">
+    <div className="deployment-profile-bar">
+      <label><span>{t('deployment.task')}</span><select value={profile.id} onChange={(event) => { const next = profiles.find((item) => item.id === event.target.value); if (next) switchProfile(next) }}><option value={profile.id}>{profiles.some((item) => item.id === profile.id) ? profile.name || t('common.unnamedProfile') : t('deployment.new')}</option>{profiles.filter((item) => item.id !== profile.id).map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select></label>
+      <button className="secondary-button" onClick={() => switchProfile(empty())}><CirclePlus size={15} />{t('common.new')}</button>
+      {profiles.some((item) => item.id === profile.id) && <button className="icon-button danger" title={t('deployment.delete')} onClick={async () => { try { await window.api.deployments.remove(profile.id); const next = profiles.filter((item) => item.id !== profile.id); setProfiles(next); switchProfile(next[0] ?? empty()) } catch (error) { onError(errorMessage(error)) } }}><Trash2 size={15} /></button>}
+    </div>
+    <nav className="deployment-tabs" aria-label={t('deployment.title')}><button type="button" className={view === 'deploy' ? 'active' : ''} aria-current={view === 'deploy' ? 'page' : undefined} onClick={() => setView('deploy')}>{t('deployment.title')}</button><button type="button" className={view === 'history' ? 'active' : ''} aria-current={view === 'history' ? 'page' : undefined} onClick={() => setView('history')}>{t('deployment.history')}{runs.length > 0 && <span>{runs.length}</span>}</button></nav>
+    {view === 'deploy' && <div className="deployment-flow">
+      <section className="deployment-section deployment-files">
+        <div className="deployment-source-fields">
+          <label>{t('deployment.name')}<input value={profile.name} placeholder={t('deployment.namePlaceholder')} onChange={(event) => set('name', event.target.value)} /></label>
+          <label>{t('deployment.workspace')}<div className="input-button"><input readOnly value={profile.workspace} placeholder={t('deployment.noWorkspace')} title={profile.workspace} /><button className="secondary-button" onClick={() => void chooseWorkspace()}>{profile.workspace ? t('deployment.changeWorkspace') : t('common.choose')}</button></div></label>
+        </div>
+        <section className="deployment-file-panel">
+          <header><strong>{t('deployment.filesHeading')}</strong>{profile.workspace && <small>{t('deployment.selectionHint')}</small>}</header>
+          {profile.workspace ? <><div className="deployment-tree"><ul className="deployment-tree-list"><li className="deployment-tree-node deployment-tree-root"><div className="deployment-tree-row deployment-root-row"><span className="deployment-tree-spacer" /><input type="checkbox" checked={profile.selection.included.includes('.') && profile.selection.excluded.length === 0} ref={(element) => { if (element) element.indeterminate = profile.selection.included.includes('.') ? profile.selection.excluded.length > 0 : profile.selection.included.length > 0 }} onChange={(event) => select('.', event.target.checked)} /><FolderOpen size={15} className="deployment-file-icon deployment-folder-icon" /><strong title={profile.workspace}>{profile.workspace.split(/[\\/]/).filter(Boolean).pop() || profile.workspace}</strong></div><ul className="deployment-tree-children">{renderNodes('.')}</ul></li></ul></div>{previewData && <footer>{t('deployment.selected', { count: previewData.files.length, size: previewData.totalSize })}</footer>}</> : <div className="deployment-empty"><strong>{t('deployment.emptyWorkspaceTitle')}</strong><p>{t('deployment.emptyWorkspaceHint')}</p><button className="secondary-button" onClick={() => void chooseWorkspace()}><FolderOpen size={15} />{t('deployment.chooseWorkspace')}</button></div>}
+        </section>
+      </section>
+      <section className="deployment-section deployment-settings">
+        <div className="deployment-setting-card deployment-target-card">
+          <label>{t('deployment.remoteTarget')}<input value={profile.remoteDirectory} onChange={(event) => set('remoteDirectory', event.target.value)} /></label>
+          <div className="deployment-archive-controls"><label className="check-label"><input type="checkbox" checked={profile.archiveEnabled} onChange={(event) => set('archiveEnabled', event.target.checked)} />{t('deployment.archive')}</label>{profile.archiveEnabled && <label>{t('deployment.archiveFormat')}<select value={profile.archiveFormat ?? 'zip'} onChange={(event) => set('archiveFormat', event.target.value as DeploymentProfile['archiveFormat'])}><option value="zip">ZIP</option><option value="tarGz">tar.gz</option></select></label>}</div>
+        </div>
+        <details className="deployment-setting-card deployment-optional" key={profile.id + '-shell'}>
+          <summary><span>{t('deployment.shell')}</span>{profile.shellTemplate.trim() && <small>{t('deployment.configured')}</small>}</summary>
+          <div className="deployment-optional-body">
+            <div className="deployment-shell-toolbar"><label htmlFor="deployment-shell-editor">{t('deployment.shellCommand')}</label><div className="deployment-shell-actions"><label>{t('deployment.shellType')}<select value={profile.shell ?? 'sh'} onChange={(event) => set('shell', event.target.value as DeploymentProfile['shell'])}><option value="sh">sh</option><option value="bash">bash</option></select></label><button type="button" className="secondary-button" aria-expanded={aiComposerOpen} onClick={() => setAiComposerOpen((open) => !open)}><WandSparkles size={15} />{t('deployment.aiAssist')}</button></div></div>
+            <textarea id="deployment-shell-editor" ref={shellEditorRef} rows={5} className="deployment-shell" value={profile.shellTemplate} onChange={(event) => set('shellTemplate', event.target.value)} />
+            {aiComposerOpen && <DeploymentAiComposer archiveEnabled={profile.archiveEnabled} archiveFormat={profile.archiveFormat ?? 'zip'} shell={profile.shell ?? 'sh'} settings={aiSettings} onSettings={onOpenAiSettings} onUse={(command) => { set('shellTemplate', command); setAiComposerOpen(false); window.requestAnimationFrame(() => shellEditorRef.current?.focus()) }} />}
+            {/\bsudo\b/.test(profile.shellTemplate) && <p className="deployment-sudo-hint">{t('deployment.sudoHint')}</p>}
+            <div className="deployment-shell-help"><span>{t('deployment.variableHint')}</span><code>{t('deployment.shellExample')}</code></div>
+            <div className="deployment-variable-grid">{deploymentVariables.map((variable) => <button type="button" className="deployment-variable" key={variable.name} onClick={() => insertShellVariable(variable.name)} aria-label={t('deployment.insertVariable') + ' ' + variable.name}><span className="deployment-variable-name"><code>{variable.name}</code><CirclePlus size={15} /></span><span className="deployment-variable-description">{t(variable.descriptionKey)}</span></button>)}</div>
+            {profile.shellTemplate.trim() && <label className="check-label"><input type="checkbox" checked={profile.confirmManual} onChange={(event) => set('confirmManual', event.target.checked)} />{t('deployment.confirmManual')}</label>}
+          </div>
+        </details>
+        <details className="deployment-setting-card deployment-optional" key={profile.id + '-schedule'}>
+          <summary><span>{t('deployment.schedule')}</span>{profile.schedule.enabled && <small>{profile.schedule.dailyTime}</small>}</summary>
+          <div className="deployment-optional-body deployment-schedule"><label className="check-label"><input type="checkbox" checked={profile.schedule.enabled} onChange={(event) => set('schedule', { ...profile.schedule, enabled: event.target.checked })} />{t('deployment.schedule')}</label><input type="time" disabled={!profile.schedule.enabled} value={profile.schedule.dailyTime} onChange={(event) => set('schedule', { ...profile.schedule, dailyTime: event.target.value })} /></div>
+        </details>
+      </section>
+      {previewData && <section className="deployment-section deployment-preview" ref={previewRef}>
+        <div className="deployment-section-heading"><strong>{t('deployment.preview')}</strong><span>{t('deployment.selected', { count: previewData.files.length, size: previewData.totalSize })}</span></div>
+        <div className="deployment-preview-paths"><div className="deployment-path"><strong>{t('deployment.remoteTarget')}</strong><code>{previewData.remoteTargetDirectory}</code></div>{archiveDestination && <div className="deployment-path"><strong>{t('deployment.archivePath')}</strong><code>{archiveDestination}</code></div>}</div>
+        <div className="deployment-preview-tree-panel"><header><strong>{t('deployment.fileTree')}</strong><span>{profile.archiveEnabled ? t('deployment.archiveTreeHint') : t('deployment.filesTreeHint')}</span></header><DeploymentPreviewTree files={previewData.files} root={previewData.archiveFileName ?? previewData.remoteTargetDirectory} archive={Boolean(previewData.archiveFileName)} /></div>
+        <p className="deployment-overwrite-hint">{t('deployment.overwriteHint')}</p>
+        <details className="deployment-preview-details"><summary>{t('deployment.manifest')}</summary><pre className="deployment-code">{JSON.stringify({ deploymentId: profile.id, deploymentName: profile.name, bookmarkId: profile.bookmarkId, sourceWorkspace: profile.workspace, remoteTargetDirectory: profile.remoteDirectory, archiveFileName: previewData.archiveFileName, archiveFormat: profile.archiveEnabled ? profile.archiveFormat ?? 'zip' : null, shell: profile.shell ?? 'sh', selectedFileCount: previewData.files.length, selectedFiles: previewData.files, archiveEnabled: profile.archiveEnabled }, null, 2)}</pre></details>
+        {previewData.commandPreview && <details className="deployment-preview-details"><summary>{t('deployment.expandedCommand')}</summary><pre className="deployment-code">{previewData.commandPreview}</pre></details>}
+      </section>}
+      {shownRun && renderRunResult(shownRun, resultRef)}
+    </div>}
+    {view === 'history' && <div className="deployment-flow deployment-history-view">
+      <div className="deployment-history-toolbar"><button className="secondary-button" onClick={() => void refreshRuns().catch((error) => onError(errorMessage(error)))}>{t('deployment.refresh')}</button><button className="secondary-button" disabled={selectedRuns.size === 0} onClick={async () => { const accepted = await onConfirm({ title: t('deployment.deleteHistory'), message: t('deployment.localDeleteOnly'), kind: 'danger', confirmLabel: t('deployment.deleteHistory') }); if (!accepted) return; try { await window.api.deployments.runsRemove([...selectedRuns]); setSelectedRuns(new Set()); setHistoryRun(null); await refreshRuns() } catch (error) { onError(errorMessage(error)) } }}>{t('deployment.deleteHistory')}</button></div>
+      <div className="deployment-history">{runs.length === 0 ? <p className="deployment-history-empty">{t('deployment.noHistory')}</p> : runs.map((item) => <div className="deployment-history-row" key={item.id}>
+        <input type="checkbox" checked={selectedRuns.has(item.id)} onChange={(event) => setSelectedRuns((current) => { const next = new Set(current); if (event.target.checked) next.add(item.id); else next.delete(item.id); return next })} />
+        <button className="deployment-history-entry" onClick={() => { void window.api.deployments.runGet(item.id).then((next) => { setHistoryRun(next); window.requestAnimationFrame(() => historyResultRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' })) }).catch((error) => onError(errorMessage(error))) }}><time>{new Date(item.startedAt).toLocaleString()}</time><span className={'deployment-run-status ' + item.status}>{statusText[item.status] ?? item.status}</span><span className="deployment-history-meta">{item.triggerType === 'scheduled' ? t('deployment.scheduled') : t('deployment.manual')} · {t('deployment.filesCount')}: {item.selectedFileCount} · {t('deployment.duration')}: {item.finishedAt ? Math.round((Date.parse(item.finishedAt) - Date.parse(item.startedAt)) / 1000) + 's' : '…'} · {t('deployment.exitCode')}: {item.commandExitCode ?? '—'}</span></button>
+        {!['succeeded', 'failed', 'cancelled'].includes(item.status) && <button className="icon-button" title={t('deployment.cancelRun')} onClick={() => void cancel(item.id)}><X size={14} /></button>}
+      </div>)}</div>
+      {historyRun && renderRunResult(historyRun, historyResultRef)}
+    </div>}
+    <div className="deployment-footer"><button className="secondary-button" onClick={onClose}>{t('common.close')}</button>{view === 'deploy' && <div><button className="secondary-button" disabled={!canSave || busy} onClick={() => void save()}>{t('deployment.save')}</button><button className="secondary-button" disabled={!canPreview || busy} onClick={() => void preview()}>{previewData ? t('deployment.previewAgain') : t('deployment.savePreview')}</button>{previewData && <button className="primary-button" disabled={busy} onClick={() => void execute()}><Rocket size={15} />{busy ? t('deployment.running') : t('deployment.run')}</button>}</div>}</div>
   </div></Modal>
 }
 
-function SettingsDialog({ initialSection, settings, backgroundImage, appIcons, uiTheme, appLanguage, aiSettings, onAiSettingsChange, onThemePreview, onLanguagePreview, onClose, onSave, onConfirm, onNotice, onError }: { initialSection: SettingsSection; settings: TerminalSettings; backgroundImage: string; appIcons: AppIconSettings; uiTheme: UiTheme; appLanguage: AppLanguage; aiSettings: AiSettings; onAiSettingsChange(settings: AiSettings): void; onThemePreview(theme: UiTheme): void; onLanguagePreview(language: AppLanguage): void; onClose(): void; onSave(settings: TerminalSettings, backgroundImage: string, appIcon: AppIconId, uiTheme: UiTheme, appLanguage: AppLanguage, ai: AiSettingsInput): void; onConfirm: ConfirmAction; onNotice(message: string): void; onError(message: string): void }): React.JSX.Element {
+function SettingsDialog({ initialSection, settings, backgroundImage, appIcons, uiTheme, appLanguage, aiSettings, onAiSettingsChange, onThemePreview, onLanguagePreview, onClose, onSave, onConfirm, onNotice, onError, raised = false }: { initialSection: SettingsSection; settings: TerminalSettings; backgroundImage: string; appIcons: AppIconSettings; uiTheme: UiTheme; appLanguage: AppLanguage; aiSettings: AiSettings; onAiSettingsChange(settings: AiSettings): void; onThemePreview(theme: UiTheme): void; onLanguagePreview(language: AppLanguage): void; onClose(): void; onSave(settings: TerminalSettings, backgroundImage: string, appIcon: AppIconId, uiTheme: UiTheme, appLanguage: AppLanguage, ai: AiSettingsInput): void; onConfirm: ConfirmAction; onNotice(message: string): void; onError(message: string): void; raised?: boolean }): React.JSX.Element {
   const { t } = useI18n()
   const [form, setForm] = useState<TerminalSettings>({ ...settings })
   const [previewImage, setPreviewImage] = useState(backgroundImage)
@@ -1106,7 +1392,7 @@ function SettingsDialog({ initialSection, settings, backgroundImage, appIcons, u
   const installedFonts = (systemFonts ?? []).filter((font) => font.toLocaleLowerCase() !== 'jetbrains mono')
   const installedFont = installedFonts.find((font) => font.toLocaleLowerCase() === currentFontName.toLocaleLowerCase())
   const fontChoice = manualFontMode ? '__manual__' : currentFontName === 'JetBrains Mono' ? '__bundled__' : currentFontName === 'monospace' ? '__system__' : systemFonts === null ? '__current__' : installedFont ?? '__manual__'
-  return <Modal title={t('common.settings')} onClose={onClose} wide className="settings-dialog"><form className="form-grid terminal-settings-form" onSubmit={(event) => { event.preventDefault(); onSave(form, previewImage, appIcon, theme, language, aiInput()) }}>
+  return <Modal title={t('common.settings')} onClose={onClose} wide raised={raised} className="settings-dialog"><form className="form-grid terminal-settings-form" onSubmit={(event) => { event.preventDefault(); onSave(form, previewImage, appIcon, theme, language, aiInput()) }}>
     <div className="settings-tabs" role="tablist" aria-label={t('app.settingsCategories')}><button type="button" role="tab" aria-selected={section === 'appearance'} className={section === 'appearance' ? 'active' : ''} onClick={() => setSection('appearance')}><Palette size={15} />{t('app.appearance')}</button><button type="button" role="tab" aria-selected={section === 'terminal'} className={section === 'terminal' ? 'active' : ''} onClick={() => setSection('terminal')}><SquareTerminal size={15} />{t('common.terminal')}</button><button type="button" role="tab" aria-selected={section === 'ai'} className={section === 'ai' ? 'active' : ''} onClick={() => setSection('ai')}><Bot size={15} />AI</button><button type="button" role="tab" aria-selected={section === 'about'} className={section === 'about' ? 'active' : ''} onClick={() => setSection('about')}><Info size={15} />{t('app.about')}</button></div>
     <div className={`settings-content ${section}`}>
     {section === 'appearance' ? <><fieldset className="ui-theme-settings"><legend>{t('common.theme')}</legend><div className="theme-options" role="radiogroup" aria-label={t('common.theme')}>{themeOptions.map((option) => { const Icon = option.icon; return <button key={option.value} type="button" role="radio" aria-checked={theme === option.value} className={theme === option.value ? 'active' : ''} onClick={() => selectTheme(option.value)}><Icon size={17} /><span>{option.label}</span></button> })}</div></fieldset><fieldset className="ui-theme-settings"><legend>{t('common.language')}</legend><div className="theme-options" role="radiogroup" aria-label={t('common.language')}>{availableLanguages.map((option) => <button key={option.code} type="button" role="radio" aria-checked={language === option.code} className={language === option.code ? 'active' : ''} onClick={() => { setDialogLanguage(option.code); onLanguagePreview(option.code) }}><Languages size={17} /><span>{option.label}</span></button>)}</div></fieldset><fieldset className="app-icon-settings"><legend>{t('app.appIcon')}</legend><div className="app-icon-options">{appIcons.options.map((icon) => <label key={icon.id} className={appIcon === icon.id ? 'selected' : ''}><input type="radio" name="app-icon" checked={appIcon === icon.id} onChange={() => setAppIcon(icon.id)} /><img src={icon.dataUrl} alt="" /><span>{t(appIconMessageKeys[icon.id])}</span></label>)}</div></fieldset><section className="diagnostic-section"><strong>{t('app.diagnostics')}</strong><div className="diagnostic-export"><button type="button" className="secondary-button" onClick={async () => { try { const path = await window.api.diagnostics.export(); if (path) setDiagnosticPath(path) } catch (error) { onError(errorMessage(error)) } }}><FileInput size={15} />{t('app.exportDiagnostics')}</button>{diagnosticPath && <small title={diagnosticPath}>{diagnosticPath}</small>}</div></section></> : section === 'about' ? <div className="about-settings">
@@ -1206,9 +1492,9 @@ function ConflictDialog({ conflict, onDecision }: { conflict: { sourcePath: stri
   return <Modal title={t('app.aFileWithThisNameAlreadyExists')} onClose={() => onDecision('skip', false)}><div className="dialog-copy"><p className="path-line">{conflict.destinationPath}</p><label className="check-label"><input type="checkbox" checked={apply} onChange={(event) => setApply(event.target.checked)} />{t('app.applyToAllConflictsInThisBatch')}</label><div className="dialog-actions spread"><button className="secondary-button" onClick={() => onDecision('skip', apply)}>{t('app.skip')}</button><button className="secondary-button" onClick={() => onDecision('rename', apply)}>{t('app.rename')}</button><button className="danger-button" onClick={() => onDecision('overwrite', apply)}>{t('app.overwrite')}</button></div></div></Modal>
 }
 
-function Modal({ title, onClose, children, wide = false, raised = false, className = '' }: { title: string; onClose(): void; children: React.ReactNode; wide?: boolean; raised?: boolean; className?: string }): React.JSX.Element {
+function Modal({ title, onClose, children, wide = false, raised = false, className = '', suppressContextMenu = false }: { title: string; onClose(): void; children: React.ReactNode; wide?: boolean; raised?: boolean; className?: string; suppressContextMenu?: boolean }): React.JSX.Element {
   const { t } = useI18n()
-  return <div className={`modal-backdrop ${raised ? 'raised' : ''}`} onMouseDown={(event) => { if (event.target === event.currentTarget) onClose() }}><section className={`modal ${wide ? 'wide' : ''} ${className}`} role="dialog" aria-modal="true"><header><strong>{title}</strong><button className="icon-button" title={t('common.close')} aria-label={t('common.close')} onClick={onClose}><X size={18} /></button></header>{children}</section></div>
+  return <div className={`modal-backdrop ${raised ? 'raised' : ''}`} onMouseDown={(event) => { if (event.target === event.currentTarget) onClose() }}><section className={`modal ${wide ? 'wide' : ''} ${className}`} role="dialog" aria-modal="true" onContextMenu={suppressContextMenu ? (event) => event.preventDefault() : undefined}><header><strong>{title}</strong><button className="icon-button" title={t('common.close')} aria-label={t('common.close')} onClick={onClose}><X size={18} /></button></header>{children}</section></div>
 }
 
 function ConfirmationDialog({ confirmation, onDecision }: { confirmation: ConfirmationOptions; onDecision(accepted: boolean): void }): React.JSX.Element {

@@ -2,6 +2,7 @@ mod ai;
 mod app_icon;
 mod commands;
 mod database;
+mod deployment;
 mod desktop;
 mod models;
 mod sessions;
@@ -24,6 +25,7 @@ use std::{
 
 use commands::*;
 use database::Database;
+use deployment::*;
 use sessions::SessionManager;
 use tauri::{Manager, RunEvent, Theme};
 use transfers::TransferManager;
@@ -151,10 +153,14 @@ pub fn run() {
             let transfers =
                 TransferManager::new(app.handle().clone(), database.clone(), sessions.clone());
             let tunnels = TunnelManager::new(app.handle().clone(), sessions.clone());
+            let deployments =
+                deployment::DeploymentManager::new(database.clone(), sessions.clone());
+            deployments.start_scheduler();
             app.manage(AppState {
                 db: database,
                 sessions,
                 transfers,
+                deployments,
                 tunnels,
                 ai_diagnostics: ai::AiDiagnostics::default(),
                 allowed_imports: Mutex::new(HashSet::new()),
@@ -210,8 +216,14 @@ pub fn run() {
             deployments_list,
             deployments_save,
             deployments_remove,
+            deployments_tree,
             deployments_preview,
             deployments_execute,
+            deployments_confirm,
+            deployments_cancel,
+            deployment_runs_list,
+            deployment_run_get,
+            deployment_run_remove,
             tunnels_list_profiles,
             tunnels_save_profile,
             tunnels_remove_profile,

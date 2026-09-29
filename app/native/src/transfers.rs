@@ -194,35 +194,6 @@ impl TransferManager {
         }
     }
 
-    pub async fn when_settled(&self, ids: &[String]) -> bool {
-        loop {
-            let Ok(tasks) = self.db.list_transfers() else {
-                return false;
-            };
-            let selected: Vec<_> = tasks
-                .into_iter()
-                .filter(|task| ids.contains(&task.id))
-                .collect();
-            if selected.len() != ids.len() {
-                return false;
-            }
-            if selected.iter().all(|task| {
-                !matches!(
-                    task.status,
-                    TransferStatus::Queued
-                        | TransferStatus::Scanning
-                        | TransferStatus::Running
-                        | TransferStatus::Conflict
-                )
-            }) {
-                return selected
-                    .iter()
-                    .all(|task| task.status == TransferStatus::Completed);
-            }
-            tokio::time::sleep(Duration::from_millis(250)).await;
-        }
-    }
-
     async fn run(self: Arc<Self>, internal: Arc<InternalTask>) {
         let permit = match self.concurrency.clone().acquire_owned().await {
             Ok(value) => value,

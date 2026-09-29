@@ -94,8 +94,14 @@ export async function createTauriApi(): Promise<AppApi> {
       list: (bookmarkId) => call('deployments_list', { bookmarkId }),
       save: (profile: DeploymentProfile) => call('deployments_save', { profile }),
       remove: (id) => call('deployments_remove', { id }),
+      tree: (workspace, path) => call('deployments_tree', { workspace, path }),
       preview: (id, sessionId) => call('deployments_preview', { id, sessionId }),
-      execute: (id, sessionId) => call('deployments_execute', { id, sessionId })
+      execute: (id, sessionId, archiveFileName) => call('deployments_execute', { id, sessionId, archiveFileName }),
+      confirm: (runId) => call('deployments_confirm', { runId }),
+      cancel: (runId) => call('deployments_cancel', { runId }),
+      runsList: (deploymentId) => call('deployment_runs_list', { deploymentId }),
+      runGet: (id) => call('deployment_run_get', { id }),
+      runsRemove: (ids) => call('deployment_run_remove', { ids })
     },
     tunnels: {
       listProfiles: (bookmarkId) => call('tunnels_list_profiles', { bookmarkId }),
@@ -111,7 +117,7 @@ export async function createTauriApi(): Promise<AppApi> {
       saveSettings: (settings: AiSettingsInput) => call('ai_settings_save', { settings }),
       deleteApiKey: () => call('ai_settings_delete_key'),
       testSettings: (settings: AiSettingsInput) => call('ai_settings_test', { settings }),
-      generate: (requirement, shell: AiShell, terminalContext, redactTerminalContext) => call('ai_command_generate', { request: { requirement, shell, terminalContext, redactTerminalContext } }),
+      generate: (requirement, shell: AiShell, terminalContext, redactTerminalContext, allowMultiline) => call('ai_command_generate', { request: { requirement, shell, terminalContext, redactTerminalContext, allowMultiline } }),
       analyze: (command) => call('ai_command_analyze', { command }),
       listHistory: () => call('ai_command_history_list'),
       clearHistory: () => call('ai_command_history_clear'),

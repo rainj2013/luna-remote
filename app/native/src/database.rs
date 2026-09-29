@@ -18,6 +18,29 @@ pub struct Database {
     legacy_credential_service: Option<String>,
 }
 
+fn deployment_run_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<DeploymentRun> {
+    Ok(DeploymentRun {
+        id: row.get(0)?,
+        deployment_id: row.get(1)?,
+        bookmark_id: row.get(2)?,
+        trigger_type: row.get(3)?,
+        started_at: row.get(4)?,
+        finished_at: row.get(5)?,
+        status: row.get(6)?,
+        selected_file_count: row.get::<_, i64>(7)? as usize,
+        archive_enabled: row.get::<_, i64>(8)? != 0,
+        archive_size: row.get(9)?,
+        manifest_sha256: row.get(10)?,
+        remote_destination_dir: row.get(11)?,
+        command_exit_code: row.get(12)?,
+        stdout: row.get(13)?,
+        stderr: row.get(14)?,
+        error: row.get(15)?,
+        manifest: row.get(16)?,
+        command_line: row.get(17)?,
+    })
+}
+
 impl Database {
     pub fn open(path: &Path, credential_service: &str) -> Result<Self, String> {
         Self::open_with_legacy(path, credential_service, None)
@@ -62,7 +85,17 @@ impl Database {
               bytesTotal INTEGER NOT NULL, bytesTransferred INTEGER NOT NULL, speed REAL NOT NULL, error TEXT,
               createdAt TEXT NOT NULL, updatedAt TEXT NOT NULL
             );
-            PRAGMA user_version = 6;
+            CREATE TABLE IF NOT EXISTS deployment_runs (
+              id TEXT PRIMARY KEY, deploymentId TEXT NOT NULL, bookmarkId TEXT NOT NULL,
+              triggerType TEXT NOT NULL, startedAt TEXT NOT NULL, finishedAt TEXT,
+              status TEXT NOT NULL, selectedFileCount INTEGER NOT NULL,
+              archiveEnabled INTEGER NOT NULL, archiveSize INTEGER, manifestSha256 TEXT,
+              remoteStagingDir TEXT NOT NULL, commandExitCode INTEGER,
+              stdout TEXT NOT NULL, stderr TEXT NOT NULL, error TEXT, manifest TEXT,
+              commandLine TEXT NOT NULL DEFAULT ''
+            );
+            CREATE INDEX IF NOT EXISTS deployment_runs_profile_time ON deployment_runs(deploymentId, startedAt DESC);
+            PRAGMA user_version = 7;
         "#))?;
         let has_sort_order = self.with_conn(|db| {
             let mut statement = db.prepare("PRAGMA table_info(bookmarks)")?;
@@ -95,7 +128,8 @@ impl Database {
                 transaction.commit()
             })?;
         }
-        self.with_conn(|db| db.execute("UPDATE transfers SET status='interrupted', error='应用上次退出时传输未完成', updatedAt=? WHERE status IN ('queued','scanning','running','conflict')", [Utc::now().to_rfc3339()]).map(|_| ()))
+        self.with_conn(|db| db.execute("UPDATE transfers SET status='interrupted', error='应用上次退出时传输未完成', updatedAt=? WHERE status IN ('queued','scanning','running','conflict')", [Utc::now().to_rfc3339()]).map(|_| ()))?;
+        self.with_conn(|db| db.execute("UPDATE deployment_runs SET status='failed', error='应用上次退出时部署未完成', finishedAt=? WHERE status NOT IN ('succeeded','failed','cancelled')", [Utc::now().to_rfc3339()]).map(|_| ()))
     }
 
     fn with_conn<T>(
@@ -558,6 +592,33 @@ impl Database {
                 params![key, json],
             )
             .map(|_| ())
+        })
+    }
+
+    pub fn save_deployment_run(&self, run: &DeploymentRun) -> Result<(), String> {
+        self.with_conn(|db| db.execute(r#"INSERT INTO deployment_runs(id,deploymentId,bookmarkId,triggerType,startedAt,finishedAt,status,selectedFileCount,archiveEnabled,archiveSize,manifestSha256,remoteStagingDir,commandExitCode,stdout,stderr,error,manifest,commandLine)
+            VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET finishedAt=excluded.finishedAt,status=excluded.status,selectedFileCount=excluded.selectedFileCount,archiveSize=excluded.archiveSize,manifestSha256=excluded.manifestSha256,remoteStagingDir=excluded.remoteStagingDir,commandExitCode=excluded.commandExitCode,stdout=excluded.stdout,stderr=excluded.stderr,error=excluded.error,manifest=excluded.manifest,commandLine=excluded.commandLine"#,
+                params![run.id,run.deployment_id,run.bookmark_id,run.trigger_type,run.started_at,run.finished_at,run.status,run.selected_file_count as i64,run.archive_enabled as i64,run.archive_size,run.manifest_sha256,run.remote_destination_dir,run.command_exit_code,run.stdout,run.stderr,run.error,run.manifest,run.command_line]).map(|_| ()))
+    }
+
+    pub fn list_deployment_runs(&self, deployment_id: &str) -> Result<Vec<DeploymentRun>, String> {
+        self.with_conn(|db| {
+            let mut statement = db.prepare("SELECT id,deploymentId,bookmarkId,triggerType,startedAt,finishedAt,status,selectedFileCount,archiveEnabled,archiveSize,manifestSha256,remoteStagingDir,commandExitCode,'' AS stdout,'' AS stderr,error,NULL AS manifest,commandLine FROM deployment_runs WHERE deploymentId=? ORDER BY startedAt DESC LIMIT 500")?;
+            statement.query_map([deployment_id], deployment_run_from_row)?.collect()
+        })
+    }
+
+    pub fn get_deployment_run(&self, id: &str) -> Result<Option<DeploymentRun>, String> {
+        self.with_conn(|db| db.query_row("SELECT id,deploymentId,bookmarkId,triggerType,startedAt,finishedAt,status,selectedFileCount,archiveEnabled,archiveSize,manifestSha256,remoteStagingDir,commandExitCode,stdout,stderr,error,manifest,commandLine FROM deployment_runs WHERE id=?", [id], deployment_run_from_row).optional())
+    }
+
+    pub fn remove_deployment_runs(&self, ids: &[String]) -> Result<(), String> {
+        self.with_conn(|db| {
+            let transaction = db.transaction()?;
+            for id in ids {
+                transaction.execute("DELETE FROM deployment_runs WHERE id=?", [id])?;
+            }
+            transaction.commit()
         })
     }
 

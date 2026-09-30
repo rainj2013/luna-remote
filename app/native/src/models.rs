@@ -611,22 +611,34 @@ pub struct DeploymentProfile {
     pub confirm_manual: bool,
     #[serde(default)]
     pub schedule: DeploymentSchedule,
+    #[serde(default)]
+    pub hook_url: String,
+    #[serde(default, alias = "hookFormat")]
+    pub hook_template: Option<DeploymentHookTemplate>,
+    #[serde(default)]
+    pub hook_body: String,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum DeploymentHookTemplate {
+    #[default]
+    #[serde(alias = "json")]
+    Custom,
+    Feishu,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum DeploymentShell {
     #[default]
-    Sh,
+    #[serde(alias = "sh")]
     Bash,
 }
 
 impl DeploymentShell {
     pub fn executable(self) -> &'static str {
-        match self {
-            Self::Sh => "sh",
-            Self::Bash => "bash",
-        }
+        "bash"
     }
 }
 
@@ -706,6 +718,26 @@ pub struct DeploymentPreview {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct DeploymentPreviewProgress {
+    pub request_id: String,
+    pub phase: String,
+    pub files_total: usize,
+    pub files_processed: usize,
+    pub bytes_total: u64,
+    pub bytes_processed: u64,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DeploymentProgress {
+    pub request_id: String,
+    pub phase: String,
+    pub bytes_total: u64,
+    pub bytes_processed: u64,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct DeploymentRun {
     pub id: String,
     pub deployment_id: String,
@@ -726,6 +758,8 @@ pub struct DeploymentRun {
     pub manifest: Option<String>,
     #[serde(default)]
     pub command_line: String,
+    #[serde(default)]
+    pub hook_error: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
@@ -786,6 +820,8 @@ pub enum AppEvent {
     Transfer(TransferTask),
     Tunnel(TunnelSummary),
     TransferConflict(TransferConflict),
+    DeploymentPreviewProgress(DeploymentPreviewProgress),
+    DeploymentProgress(DeploymentProgress),
     MenuCommand(MenuCommand),
 }
 

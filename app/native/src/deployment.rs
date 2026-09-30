@@ -7,17 +7,19 @@ use std::{
         Arc, Mutex,
         atomic::{AtomicBool, Ordering},
     },
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 use chrono::{Local, Utc};
+use serde::{Deserialize, Serialize};
 use russh_sftp::{
     client::{SftpSession, error::Error as SftpError},
     protocol::StatusCode,
 };
 use serde_json::json;
 use sha2::{Digest, Sha256};
-use tauri::State;
+use tauri::{AppHandle, Emitter, State};
+use tauri_plugin_dialog::{DialogExt, FilePath};
 use tokio::io::AsyncWriteExt;
 use uuid::Uuid;
 
@@ -26,12 +28,14 @@ use crate::{
     database::Database,
     models::{
         ArchiveFormat, AuthType, ConnectInput, DeploymentFile, DeploymentPreview,
-        DeploymentProfile, DeploymentRun, DirectoryEntry, EntryKind, SessionStatus,
+        DeploymentPreviewProgress, DeploymentProgress, DeploymentHookTemplate, AppEvent,
+        DeploymentProfile, DeploymentRun, DirectoryEntry, EntryKind, SessionStatus, SessionSummary,
     },
     sessions::SessionManager,
 };
 
 pub struct DeploymentManager {
+    app: AppHandle,
     db: Arc<Database>,
     sessions: Arc<SessionManager>,
     active: Mutex<HashMap<String, (String, Arc<AtomicBool>)>>,
@@ -92,7 +96,7 @@ fn remote_directory(value: &str) -> Result<String, String> {
         || value.contains('\n')
         || value.split('/').any(|part| part == "." || part == "..")
     {
-        return Err("远端目标目录必须是无穿越的绝对路径".into());
+        return Err("上传目标目录必须是无穿越的绝对路径".into());
     }
     Ok(value.into())
 }
@@ -273,7 +277,7 @@ fn selected_files(profile: &DeploymentProfile) -> Result<Vec<(String, PathBuf)>,
     Ok(output.into_iter().collect())
 }
 
-fn sha256_file(path: &Path) -> Result<(u64, String), String> {
+fn sha256_file(path: &Path, mut on_bytes: impl FnMut(u64)) -> Result<(u64, String), String> {
     let mut file = fs::File::open(path).map_err(|e| e.to_string())?;
     let mut hash = Sha256::new();
     let mut size = 0;
@@ -285,6 +289,7 @@ fn sha256_file(path: &Path) -> Result<(u64, String), String> {
         }
         hash.update(&buffer[..count]);
         size += count as u64;
+        on_bytes(count as u64);
     }
     Ok((size, format!("{:x}", hash.finalize())))
 }
@@ -293,6 +298,7 @@ fn copy_snapshot(
     source: &Path,
     destination: &Path,
     cancelled: &AtomicBool,
+    progress: Option<&ProgressReporter>,
 ) -> Result<DeploymentFile, String> {
     if fs::symlink_metadata(source)
         .map_err(|e| e.to_string())?
@@ -322,6 +328,7 @@ fn copy_snapshot(
             .map_err(|e| e.to_string())?;
         hash.update(&buffer[..count]);
         size += count as u64;
+        if let Some(progress) = progress { progress.advance(count as u64); }
     }
     Ok(DeploymentFile {
         relative_path: String::new(),
@@ -335,6 +342,7 @@ fn build_zip(
     archive: &Path,
     files: &[DeploymentFile],
     cancelled: &AtomicBool,
+    progress: Option<&ProgressReporter>,
 ) -> Result<u64, String> {
     let writer = fs::File::create(archive).map_err(|e| e.to_string())?;
     let mut zip = zip::ZipWriter::new(writer);
@@ -358,6 +366,7 @@ fn build_zip(
                 break;
             }
             zip.write_all(&buffer[..n]).map_err(|e| e.to_string())?;
+            if let Some(progress) = progress { progress.advance(n as u64); }
         }
     }
     zip.finish().map_err(|e| e.to_string())?;
@@ -367,6 +376,7 @@ fn build_zip(
 struct CancellableReader<'a> {
     file: fs::File,
     cancelled: &'a AtomicBool,
+    progress: Option<&'a ProgressReporter>,
 }
 
 impl Read for CancellableReader<'_> {
@@ -374,7 +384,9 @@ impl Read for CancellableReader<'_> {
         if self.cancelled.load(Ordering::Relaxed) {
             return Err(std::io::Error::other("已取消"));
         }
-        self.file.read(buffer)
+        let count = self.file.read(buffer)?;
+        if let Some(progress) = self.progress { progress.advance(count as u64); }
+        Ok(count)
     }
 }
 
@@ -383,6 +395,7 @@ fn build_tar_gz(
     archive: &Path,
     files: &[DeploymentFile],
     cancelled: &AtomicBool,
+    progress: Option<&ProgressReporter>,
 ) -> Result<u64, String> {
     let writer = fs::File::create(archive).map_err(|e| e.to_string())?;
     let gzip = flate2::write::GzEncoder::new(writer, flate2::Compression::default());
@@ -403,6 +416,7 @@ fn build_tar_gz(
             CancellableReader {
                 file: source,
                 cancelled,
+                progress,
             },
         )
         .map_err(|e| {
@@ -423,6 +437,97 @@ fn shell_quote(value: &str) -> String {
     format!("'{}'", value.replace('\'', "'\\''"))
 }
 
+fn connected_session_for_bookmark(sessions: Vec<SessionSummary>, bookmark_id: &str) -> Option<String> {
+    sessions.into_iter()
+        .find(|session| session.bookmark_id == bookmark_id && session.status == SessionStatus::Connected)
+        .map(|session| session.id)
+}
+
+fn prepare_profile(db: &Database, mut profile: DeploymentProfile) -> Result<DeploymentProfile, String> {
+    if db.get_bookmark(&profile.bookmark_id)?.is_none() {
+        return Err("连接不存在".into());
+    }
+    if profile.id.is_empty() {
+        profile.id = Uuid::new_v4().to_string();
+    }
+    Uuid::parse_str(&profile.id).map_err(|_| "任务 ID 无效".to_string())?;
+    profile.name = profile.name.trim().to_string();
+    profile.workspace = profile.workspace.trim().to_string();
+    profile.remote_directory = remote_directory(&profile.remote_directory)?;
+    profile.shell_template = migrate_shell_template(&profile.shell_template);
+    profile.hook_url = profile.hook_url.trim().to_string();
+    if !profile.hook_url.is_empty() {
+        let url = reqwest::Url::parse(&profile.hook_url).map_err(|_| "HTTP Hook URL 无效")?;
+        if !matches!(url.scheme(), "http" | "https") || url.host_str().is_none() {
+            return Err("HTTP Hook 只支持 http 或 https URL".into());
+        }
+        if hook_template_mode(&profile) == DeploymentHookTemplate::Custom && !profile.hook_body.trim().is_empty() {
+            render_hook_template(&profile.hook_body, &hook_template_values(&profile, None))?;
+        }
+    }
+    if profile.name.is_empty() || !Path::new(&profile.workspace).is_absolute() {
+        return Err("任务名称和工作区绝对路径不能为空".into());
+    }
+    profile.selection.included = profile.selection.included.iter().map(|p| normal_relative(p)).collect::<Result<Vec<_>, _>>()?;
+    profile.selection.excluded = profile.selection.excluded.iter().map(|p| normal_relative(p)).collect::<Result<Vec<_>, _>>()?;
+    profile.selection.included.sort();
+    profile.selection.included.dedup();
+    profile.selection.excluded.sort();
+    profile.selection.excluded.dedup();
+    if profile.schedule.enabled && profile.selection.included.is_empty() {
+        return Err("启用定时任务前请至少选择一个文件或目录".into());
+    }
+    if profile.schedule.enabled && !valid_daily_time(&profile.schedule.daily_time) {
+        return Err("每日执行时间必须为 HH:mm".into());
+    }
+    Ok(profile)
+}
+
+fn import_profiles_into_db(db: &Database, bookmark_id: &str, tasks: Vec<DeploymentProfile>) -> Result<Vec<DeploymentProfile>, String> {
+    if tasks.is_empty() || tasks.len() > 100 {
+        return Err("部署任务包应包含 1 到 100 个任务".into());
+    }
+    let imported = tasks.into_iter().map(|mut task| {
+        task.id = Uuid::new_v4().to_string();
+        task.bookmark_id = bookmark_id.to_string();
+        prepare_profile(db, task)
+    }).collect::<Result<Vec<_>, _>>()?;
+    let mut items = profiles(db);
+    for task in imported.iter().rev() {
+        items.insert(0, task.clone());
+    }
+    db.set_setting("deploymentProfiles", &items)?;
+    Ok(imported)
+}
+
+const DEPLOYMENT_BUNDLE_FORMAT: &str = "luna-remote-deployments";
+
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DeploymentBundle {
+    format: String,
+    version: u32,
+    exported_at: String,
+    source_connection: String,
+    tasks: Vec<DeploymentProfile>,
+}
+
+fn picked_path(value: Option<FilePath>) -> Option<PathBuf> {
+    value?.into_path().ok()
+}
+
+fn render_shell_template(template: &str) -> String {
+    let mut rendered = template.to_string();
+    for name in ["UPLOAD_DIR", "FILE_NAME", "FILE_PATH"] {
+        let token = format!("{{{{{name}}}}}");
+        let expansion = format!("\"${{{name}}}\"");
+        rendered = rendered.replace(&format!("\"{token}\""), &expansion);
+        rendered = rendered.replace(&format!("'{token}'"), &expansion);
+        rendered = rendered.replace(&token, &expansion);
+    }
+    rendered
+}
+
 fn shell_command(
     profile: &DeploymentProfile,
     files: &[DeploymentFile],
@@ -432,6 +537,9 @@ fn shell_command(
     let file_name = output.as_ref().map_or("", |(name, _)| name.as_str());
     let file_path = output.as_ref().map_or("", |(_, path)| path.as_str());
     let assignments = [
+        ("UPLOAD_DIR", profile.remote_directory.as_str()),
+        ("FILE_NAME", file_name),
+        ("FILE_PATH", file_path),
         ("LUNA_TARGET_DIR", profile.remote_directory.as_str()),
         ("LUNA_FILE_NAME", file_name),
         ("LUNA_FILE_PATH", file_path),
@@ -443,7 +551,7 @@ fn shell_command(
         "{} {} -lc {}",
         assignments.join(" "),
         profile.shell.executable(),
-        shell_quote(&profile.shell_template)
+        shell_quote(&render_shell_template(&profile.shell_template))
     )
 }
 
@@ -495,6 +603,7 @@ async fn upload(
     source: &Path,
     target: &str,
     cancelled: &AtomicBool,
+    progress: Option<&ProgressReporter>,
 ) -> Result<(), String> {
     ensure_remote_directory(sftp, target.rsplit_once('/').map(|v| v.0).unwrap_or("/")).await?;
     match sftp.symlink_metadata(target.to_string()).await {
@@ -531,13 +640,15 @@ async fn upload(
             .await
             .map_err(|_| "上传 60 秒没有进展".to_string())?
             .map_err(|e| e.to_string())?;
+        if let Some(progress) = progress { progress.advance(count as u64); }
     }
     writer.shutdown().await.map_err(|e| e.to_string())
 }
 
 impl DeploymentManager {
-    pub fn new(db: Arc<Database>, sessions: Arc<SessionManager>) -> Arc<Self> {
+    pub fn new(db: Arc<Database>, sessions: Arc<SessionManager>, app: AppHandle) -> Arc<Self> {
         Arc::new(Self {
+            app,
             db,
             sessions,
             active: Mutex::new(HashMap::new()),
@@ -557,45 +668,19 @@ impl DeploymentManager {
             .find(|p| p.id == id)
             .ok_or("部署任务不存在".into())
     }
-    pub fn save(&self, mut profile: DeploymentProfile) -> Result<DeploymentProfile, String> {
-        if self.db.get_bookmark(&profile.bookmark_id)?.is_none() {
-            return Err("连接不存在".into());
-        }
-        if profile.id.is_empty() {
-            profile.id = Uuid::new_v4().to_string();
-        }
-        Uuid::parse_str(&profile.id).map_err(|_| "任务 ID 无效".to_string())?;
-        profile.name = profile.name.trim().to_string();
-        profile.workspace = profile.workspace.trim().to_string();
-        profile.remote_directory = remote_directory(&profile.remote_directory)?;
-        profile.shell_template = migrate_shell_template(&profile.shell_template);
-        if profile.name.is_empty() || !Path::new(&profile.workspace).is_absolute() {
-            return Err("任务名称和工作区绝对路径不能为空".into());
-        }
-        profile.selection.included = profile
-            .selection
-            .included
-            .iter()
-            .map(|p| normal_relative(p))
-            .collect::<Result<Vec<_>, _>>()?;
-        profile.selection.excluded = profile
-            .selection
-            .excluded
-            .iter()
-            .map(|p| normal_relative(p))
-            .collect::<Result<Vec<_>, _>>()?;
-        profile.selection.included.sort();
-        profile.selection.included.dedup();
-        profile.selection.excluded.sort();
-        profile.selection.excluded.dedup();
-        if profile.schedule.enabled && !valid_daily_time(&profile.schedule.daily_time) {
-            return Err("每日执行时间必须为 HH:mm".into());
-        }
+    pub fn save(&self, profile: DeploymentProfile) -> Result<DeploymentProfile, String> {
+        let profile = prepare_profile(&self.db, profile)?;
         let mut items = profiles(&self.db);
         items.retain(|p| p.id != profile.id);
         items.insert(0, profile.clone());
         self.db.set_setting("deploymentProfiles", &items)?;
         Ok(profile)
+    }
+    pub fn list_all(&self) -> Vec<DeploymentProfile> {
+        profiles(&self.db)
+    }
+    pub fn import_profiles(&self, bookmark_id: &str, tasks: Vec<DeploymentProfile>) -> Result<Vec<DeploymentProfile>, String> {
+        import_profiles_into_db(&self.db, bookmark_id, tasks)
     }
     pub fn remove(&self, id: &str) -> Result<(), String> {
         let mut items = profiles(&self.db);
@@ -657,19 +742,41 @@ impl DeploymentManager {
         items.sort_by(|a, b| a.name.cmp(&b.name));
         Ok(items)
     }
-    pub fn preview(&self, id: &str) -> Result<DeploymentPreview, String> {
-        let profile = self.get(id)?;
+    pub fn preview(&self, profile: DeploymentProfile, request_id: &str, mut on_progress: impl FnMut(DeploymentPreviewProgress)) -> Result<DeploymentPreview, String> {
+        let profile = prepare_profile(&self.db, profile)?;
         validate_profile(&profile)?;
+        let mut progress = DeploymentPreviewProgress {
+            request_id: request_id.into(), phase: "scanning".into(),
+            files_total: 0, files_processed: 0, bytes_total: 0, bytes_processed: 0,
+        };
+        on_progress(progress.clone());
+        let selected = selected_files(&profile)?;
+        progress.files_total = selected.len();
+        progress.bytes_total = selected.iter().try_fold(0u64, |total, (_, path)| {
+            fs::metadata(path).map(|meta| total.saturating_add(meta.len())).map_err(|e| e.to_string())
+        })?;
+        progress.phase = "hashing".into();
+        on_progress(progress.clone());
         let mut files = Vec::new();
         let mut total_size = 0;
-        for (relative, path) in selected_files(&profile)? {
-            let (size, sha256) = sha256_file(&path)?;
+        let mut last_reported_bytes = 0;
+        for (relative, path) in selected {
+            let (size, sha256) = sha256_file(&path, |count| {
+                progress.bytes_processed = progress.bytes_processed.saturating_add(count);
+                if progress.bytes_processed.saturating_sub(last_reported_bytes) >= 1024 * 1024 {
+                    on_progress(progress.clone());
+                    last_reported_bytes = progress.bytes_processed;
+                }
+            })?;
             total_size += size;
             files.push(DeploymentFile {
                 relative_path: relative,
                 size,
                 sha256,
             });
+            progress.files_processed += 1;
+            on_progress(progress.clone());
+            last_reported_bytes = progress.bytes_processed;
         }
         if files.is_empty() {
             return Err("没有选中的文件".into());
@@ -706,6 +813,29 @@ impl DeploymentManager {
         run.finished_at = Some(Utc::now().to_rfc3339());
         self.save_run(run)
     }
+    async fn deliver_hook(&self, profile: &DeploymentProfile, run: &mut DeploymentRun) {
+        if profile.hook_url.is_empty() || !matches!(run.status.as_str(), "succeeded" | "failed") { return; }
+        let result = async {
+            let client = reqwest::Client::builder()
+                .timeout(Duration::from_secs(10))
+                .redirect(reqwest::redirect::Policy::none())
+                .build().map_err(|_| "创建 HTTP 客户端失败".to_string())?;
+            let payload = hook_payload(profile, run)?;
+            let response = client.post(&profile.hook_url).json(&payload).send().await
+                .map_err(|_| "HTTP 请求失败或超时".to_string())?;
+            let status = response.status();
+            if !status.is_success() { return Err(format!("HTTP 状态码 {status}")); }
+            if is_feishu_webhook(&profile.hook_url) {
+                let body: serde_json::Value = response.json().await.map_err(|_| "飞书 Hook 响应不是 JSON".to_string())?;
+                if body.get("code").and_then(|code| code.as_i64()) != Some(0) {
+                    return Err(format!("飞书 Hook 返回错误：{}", body.get("msg").and_then(|msg| msg.as_str()).unwrap_or("未知错误")));
+                }
+            }
+            Ok(())
+        }.await;
+        run.hook_error = result.err();
+        let _ = self.save_run(run);
+    }
     async fn session_for(
         &self,
         profile: &DeploymentProfile,
@@ -725,13 +855,8 @@ impl DeploymentManager {
             }
             return Ok((id, false));
         }
-        if let Some(session) = (!scheduled)
-            .then(|| self.sessions.list())
-            .into_iter()
-            .flatten()
-            .find(|s| s.bookmark_id == profile.bookmark_id && s.status == SessionStatus::Connected)
-        {
-            return Ok((session.id, false));
+        if let Some(id) = connected_session_for_bookmark(self.sessions.list(), &profile.bookmark_id) {
+            return Ok((id, false));
         }
         let bookmark = self
             .db
@@ -749,7 +874,7 @@ impl DeploymentManager {
                 if item.auth_type == AuthType::Password
                     && self.db.get_credential(&item.id).is_none()
                 {
-                    return Err(format!("{} 没有保存的认证凭据", item.name));
+                    return Err(format!("目标连接当前未连接；自动重连需要保存 {} 的认证凭据", item.name));
                 }
             }
         }
@@ -777,22 +902,35 @@ impl DeploymentManager {
         session_id: Option<String>,
         scheduled: bool,
         preview_archive_name: Option<String>,
+        request_id: Option<String>,
+    ) -> Result<DeploymentRun, String> {
+        self.execute_with_trigger(id, session_id, scheduled, false, preview_archive_name, request_id, Uuid::new_v4().to_string(), None).await
+    }
+    pub async fn execute_with_trigger(
+        &self,
+        id: String,
+        session_id: Option<String>,
+        scheduled: bool,
+        api_trigger: bool,
+        preview_archive_name: Option<String>,
+        request_id: Option<String>,
+        run_id: String,
+        created: Option<tokio::sync::oneshot::Sender<()>>,
     ) -> Result<DeploymentRun, String> {
         let profile = self.get(&id)?;
         let archive_file_name = resolved_archive_name(
             &profile,
-            if scheduled {
+            if scheduled || api_trigger {
                 None
             } else {
                 preview_archive_name.as_deref()
             },
         )?;
-        let run_id = Uuid::new_v4().to_string();
         let mut run = DeploymentRun {
             id: run_id.clone(),
             deployment_id: id.clone(),
             bookmark_id: profile.bookmark_id.clone(),
-            trigger_type: if scheduled { "scheduled" } else { "manual" }.into(),
+            trigger_type: if scheduled { "scheduled" } else if api_trigger { "api" } else { "manual" }.into(),
             started_at: Utc::now().to_rfc3339(),
             finished_at: None,
             status: "draft".into(),
@@ -807,16 +945,24 @@ impl DeploymentManager {
             error: None,
             manifest: None,
             command_line: String::new(),
+            hook_error: None,
         };
         self.save_run(&run)?;
+        if let Some(created) = created { let _ = created.send(()); }
         let cancelled = Arc::new(AtomicBool::new(false));
-        {
+        let duplicate = {
             let mut active = self.active.lock().map_err(|_| "任务状态锁已损坏")?;
             if active.contains_key(&id) {
-                self.finish(&mut run, "failed", Some("同一任务已有运行，已跳过".into()))?;
-                return Ok(run);
+                true
+            } else {
+                active.insert(id.clone(), (run.id.clone(), cancelled.clone()));
+                false
             }
-            active.insert(id.clone(), (run.id.clone(), cancelled.clone()));
+        };
+        if duplicate {
+            self.finish(&mut run, "failed", Some("同一任务已有运行，已跳过".into()))?;
+            self.deliver_hook(&profile, &mut run).await;
+            return Ok(run);
         }
         let mut own_session = None;
         let result = self
@@ -824,10 +970,11 @@ impl DeploymentManager {
                 &profile,
                 &mut run,
                 session_id,
-                scheduled,
+                scheduled || api_trigger,
                 archive_file_name.as_deref(),
                 cancelled.clone(),
                 &mut own_session,
+                request_id.as_deref(),
             )
             .await;
         let finish_result = if let Err(error) = result {
@@ -850,6 +997,7 @@ impl DeploymentManager {
             }
         }
         finish_result?;
+        self.deliver_hook(&profile, &mut run).await;
         Ok(run)
     }
     async fn execute_inner(
@@ -861,7 +1009,13 @@ impl DeploymentManager {
         archive_file_name: Option<&str>,
         cancelled: Arc<AtomicBool>,
         own_session: &mut Option<String>,
+        request_id: Option<&str>,
     ) -> Result<(), String> {
+        let progress = request_id.filter(|_| !scheduled).map(|id| ProgressReporter {
+            app: self.app.clone(), request_id: id.into(),
+            state: Mutex::new((String::new(), 0, 0, Instant::now())),
+        });
+        if let Some(progress) = &progress { progress.phase("preparing", 0); }
         self.set_status(run, "preparing")?;
         validate_profile(profile)?;
         let selected = selected_files(profile)?;
@@ -881,6 +1035,7 @@ impl DeploymentManager {
                 archive_file_name,
                 cancelled.clone(),
                 own_session,
+                progress.as_ref(),
             )
             .await;
         let _ = fs::remove_dir_all(temp);
@@ -897,12 +1052,15 @@ impl DeploymentManager {
         archive_file_name: Option<&str>,
         cancelled: Arc<AtomicBool>,
         own_session: &mut Option<String>,
+        progress: Option<&ProgressReporter>,
     ) -> Result<(), String> {
         self.set_status(run, "packaging")?;
+        let total_bytes = selected.iter().map(|(_, path)| fs::metadata(path).map(|meta| meta.len()).unwrap_or(0)).sum();
+        if let Some(progress) = progress { progress.phase("snapshot", total_bytes); }
         let snapshot = temp.join("files");
         let mut files = Vec::new();
         for (relative, source) in selected {
-            let mut file = copy_snapshot(source, &snapshot.join(relative), &cancelled)?;
+            let mut file = copy_snapshot(source, &snapshot.join(relative), &cancelled, progress)?;
             file.relative_path = relative.clone();
             files.push(file);
         }
@@ -912,16 +1070,18 @@ impl DeploymentManager {
         run.manifest = Some(String::from_utf8_lossy(&manifest).into_owned());
         self.save_run(run)?;
         if profile.archive_enabled {
+            if let Some(progress) = progress { progress.phase("packaging", files.iter().map(|file| file.size).sum()); }
             let archive_path = temp.join(archive_file_name.expect("archive name"));
             run.archive_size = Some(match profile.archive_format {
-                ArchiveFormat::Zip => build_zip(&snapshot, &archive_path, &files, &cancelled)?,
-                ArchiveFormat::TarGz => build_tar_gz(&snapshot, &archive_path, &files, &cancelled)?,
+                ArchiveFormat::Zip => build_zip(&snapshot, &archive_path, &files, &cancelled, progress)?,
+                ArchiveFormat::TarGz => build_tar_gz(&snapshot, &archive_path, &files, &cancelled, progress)?,
             });
             self.save_run(run)?;
         }
         if cancelled.load(Ordering::Relaxed) {
             return Err("已取消".into());
         }
+        if let Some(progress) = progress { progress.phase("connecting", 0); }
         let (session_id, created) = self
             .session_for(profile, requested, scheduled, &cancelled)
             .await?;
@@ -929,6 +1089,9 @@ impl DeploymentManager {
             *own_session = Some(session_id.clone());
         }
         self.set_status(run, "uploading")?;
+        if let Some(progress) = progress {
+            progress.phase("uploading", if profile.archive_enabled { run.archive_size.unwrap_or(0) } else { files.iter().map(|file| file.size).sum() });
+        }
         let sftp = self.sessions.sftp(&session_id).await?;
         ensure_remote_directory(&sftp, &run.remote_destination_dir).await?;
         if profile.archive_enabled {
@@ -940,6 +1103,7 @@ impl DeploymentManager {
                     archive_file_name.expect("archive name"),
                 ),
                 &cancelled,
+                progress,
             )
             .await?;
         } else {
@@ -949,6 +1113,7 @@ impl DeploymentManager {
                     &snapshot.join(&file.relative_path),
                     &remote_join(&run.remote_destination_dir, &file.relative_path),
                     &cancelled,
+                    progress,
                 )
                 .await?;
             }
@@ -973,6 +1138,9 @@ impl DeploymentManager {
             );
             *own_session = None;
             return Ok(());
+        }
+        if !profile.shell_template.trim().is_empty() {
+            if let Some(progress) = progress { progress.phase("executing-command", 0); }
         }
         self.execute_command(profile, run, &session_id, &cancelled)
             .await
@@ -1053,6 +1221,7 @@ impl DeploymentManager {
             let _ = self.sessions.disconnect(&pending.session_id).await;
         }
         finish_result?;
+        self.deliver_hook(&pending.profile, &mut run).await;
         Ok(run)
     }
     pub async fn cancel(&self, id: &str) -> Result<(), String> {
@@ -1122,7 +1291,7 @@ impl DeploymentManager {
                 for id in due {
                     let manager = manager.clone();
                     tauri::async_runtime::spawn(async move {
-                        let _ = manager.execute(id, None, true, None).await;
+                        let _ = manager.execute(id, None, true, None, None).await;
                     });
                 }
             }
@@ -1156,6 +1325,63 @@ pub fn deployments_remove(state: State<AppState>, id: String) -> Result<(), Stri
     state.deployments.remove(&id)
 }
 #[tauri::command]
+pub async fn deployments_export_bundle(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    bookmark_id: String,
+) -> Result<Option<String>, String> {
+    let bookmark = state.db.get_bookmark(&bookmark_id)?.ok_or("连接不存在")?;
+    let tasks = state.deployments.list(&bookmark_id);
+    if tasks.is_empty() { return Err("当前连接没有可导出的部署任务".into()); }
+    let (sender, receiver) = tokio::sync::oneshot::channel();
+    app.dialog().file()
+        .set_title("导出部署任务")
+        .set_file_name(format!("luna-remote-deployments-{}.json", Utc::now().format("%Y-%m-%d")))
+        .add_filter("Luna Remote 部署任务", &["json"])
+        .save_file(move |path| { let _ = sender.send(path); });
+    let Some(path) = picked_path(receiver.await.ok().flatten()) else { return Ok(None); };
+    let bundle = DeploymentBundle {
+        format: DEPLOYMENT_BUNDLE_FORMAT.into(), version: 1,
+        exported_at: Utc::now().to_rfc3339(), source_connection: bookmark.name,
+        tasks,
+    };
+    fs::write(&path, format!("{}\n", serde_json::to_string_pretty(&bundle).map_err(|error| error.to_string())?))
+        .map_err(|error| error.to_string())?;
+    Ok(Some(path.to_string_lossy().into_owned()))
+}
+
+#[tauri::command]
+pub async fn deployments_pick_bundle(app: AppHandle) -> Result<Option<DeploymentBundle>, String> {
+    let (sender, receiver) = tokio::sync::oneshot::channel();
+    app.dialog().file()
+        .set_title("导入部署任务")
+        .add_filter("Luna Remote 部署任务", &["json"])
+        .pick_file(move |path| { let _ = sender.send(path); });
+    let Some(path) = picked_path(receiver.await.ok().flatten()) else { return Ok(None); };
+    let metadata = fs::metadata(&path).map_err(|error| error.to_string())?;
+    if !metadata.is_file() || metadata.len() > 10 * 1024 * 1024 {
+        return Err("部署任务包必须是小于 10 MB 的普通 JSON 文件".into());
+    }
+    let bundle: DeploymentBundle = serde_json::from_slice(&fs::read(&path).map_err(|error| error.to_string())?)
+        .map_err(|error| format!("部署任务包格式无效：{error}"))?;
+    if bundle.format != DEPLOYMENT_BUNDLE_FORMAT || bundle.version != 1 {
+        return Err("不支持此部署任务包格式或版本".into());
+    }
+    if bundle.tasks.is_empty() || bundle.tasks.len() > 100 {
+        return Err("部署任务包应包含 1 到 100 个任务".into());
+    }
+    Ok(Some(bundle))
+}
+
+#[tauri::command]
+pub fn deployments_import_bundle(
+    state: State<AppState>,
+    bookmark_id: String,
+    tasks: Vec<DeploymentProfile>,
+) -> Result<Vec<DeploymentProfile>, String> {
+    state.deployments.import_profiles(&bookmark_id, tasks)
+}
+#[tauri::command]
 pub fn deployments_tree(
     state: State<AppState>,
     workspace: String,
@@ -1164,13 +1390,211 @@ pub fn deployments_tree(
     state.deployments.tree(&workspace, &path)
 }
 #[tauri::command]
-pub fn deployments_preview(
-    state: State<AppState>,
-    id: String,
-    session_id: Option<String>,
+pub async fn deployments_preview(
+    state: State<'_, AppState>,
+    app: AppHandle,
+    profile: DeploymentProfile,
+    request_id: String,
 ) -> Result<DeploymentPreview, String> {
-    let _ = session_id;
-    state.deployments.preview(&id)
+    let deployments = Arc::clone(&state.deployments);
+    tauri::async_runtime::spawn_blocking(move || {
+        deployments.preview(profile, &request_id, |progress| {
+            let _ = app.emit("app:event", AppEvent::DeploymentPreviewProgress(progress));
+        })
+    }).await.map_err(|error| error.to_string())?
+}
+
+fn trigger_label(trigger_type: &str) -> &'static str {
+    match trigger_type {
+        "scheduled" => "定时",
+        "api" => "API",
+        _ => "手工",
+    }
+}
+
+fn hook_template_values(profile: &DeploymentProfile, run: Option<&DeploymentRun>) -> serde_json::Value {
+    let duration_seconds = run.and_then(|run| {
+        let finished = chrono::DateTime::parse_from_rfc3339(run.finished_at.as_deref()?).ok()?;
+        let started = chrono::DateTime::parse_from_rfc3339(&run.started_at).ok()?;
+        Some((finished - started).num_seconds().max(0))
+    });
+    let summary = format!(
+        "部署{}：{}\n触发方式：{}\n上传目录：{}\n运行 ID：{}{}",
+        if run.is_none_or(|run| run.status == "succeeded") { "成功" } else { "失败" },
+        profile.name,
+        run.map_or("手工", |run| trigger_label(&run.trigger_type)),
+        run.map_or(profile.remote_directory.as_str(), |run| run.remote_destination_dir.as_str()),
+        run.map_or("sample-run", |run| run.id.as_str()),
+        run.and_then(|run| run.error.as_ref()).map(|error| format!("\n原因：{error}")).unwrap_or_default(),
+    );
+    json!({
+        "summary": summary,
+        "runId": run.map_or("sample-run", |run| run.id.as_str()),
+        "deploymentId": profile.id,
+        "deploymentName": profile.name,
+        "taskName": profile.name,
+        "bookmarkId": run.map_or(profile.bookmark_id.as_str(), |run| run.bookmark_id.as_str()),
+        "triggerType": run.map_or("manual", |run| run.trigger_type.as_str()),
+        "status": run.map_or("succeeded", |run| run.status.as_str()),
+        "succeeded": run.is_none_or(|run| run.status == "succeeded"),
+        "startedAt": run.map(|run| format_hook_datetime(&run.started_at)).unwrap_or_else(|| "2026-01-01 00:00:00".into()),
+        "finishedAt": run.map(|run| run.finished_at.as_deref().map(format_hook_datetime)).unwrap_or(Some("2026-01-01 00:01:00".into())),
+        "durationSeconds": duration_seconds.or(if run.is_none() { Some(60) } else { None }),
+        "selectedFileCount": run.map_or(1, |run| run.selected_file_count),
+        "archiveSize": run.map(|run| run.archive_size).unwrap_or(Some(1024)),
+        "archiveSizeText": run.map(|run| run.archive_size.map(format_hook_size)).unwrap_or(Some("1 KB".into())),
+        "uploadDirectory": run.map_or(profile.remote_directory.as_str(), |run| run.remote_destination_dir.as_str()),
+        "commandExitCode": run.map(|run| run.command_exit_code).unwrap_or(Some(0)),
+        "error": run.map(|run| run.error.as_deref()).unwrap_or(Some("sample error")),
+    })
+}
+
+fn format_hook_datetime(value: &str) -> String {
+    chrono::DateTime::parse_from_rfc3339(value)
+        .map(|time| time.with_timezone(&Local).format("%Y-%m-%d %H:%M:%S").to_string())
+        .unwrap_or_else(|_| value.to_string())
+}
+
+fn format_hook_size(size: u64) -> String {
+    const UNITS: [&str; 4] = ["B", "KB", "MB", "GB"];
+    let mut value = size as f64;
+    let mut unit = 0;
+    while value >= 1024.0 && unit < UNITS.len() - 1 {
+        value /= 1024.0;
+        unit += 1;
+    }
+    if unit == 0 { format!("{size} B") } else { format!("{value:.1} {}", UNITS[unit]) }
+}
+
+fn render_hook_template(template: &str, values: &serde_json::Value) -> Result<serde_json::Value, String> {
+    let mut rendered = String::with_capacity(template.len());
+    let mut remaining = template;
+    let mut inside_string = false;
+    let mut escaped = false;
+    while let Some(start) = remaining.find("{{") {
+        let literal = &remaining[..start];
+        rendered.push_str(literal);
+        for byte in literal.bytes() {
+            if escaped { escaped = false; }
+            else if byte == b'\\' { escaped = true; }
+            else if byte == b'"' { inside_string = !inside_string; }
+        }
+        let tail = &remaining[start + 2..];
+        let end = tail.find("}}").ok_or("Webhook 请求体变量没有结束标记 }}")?;
+        let token = tail[..end].trim();
+        let name = token.strip_prefix("json.").unwrap_or(token);
+        let value = values.get(name).ok_or_else(|| format!("Webhook 请求体变量不存在：{token}"))?;
+        if inside_string && !token.starts_with("json.") {
+            let value = value.as_str().map(str::to_string).unwrap_or_else(|| if value.is_null() { String::new() } else { value.to_string() });
+            let quoted = serde_json::to_string(&value).map_err(|error| error.to_string())?;
+            rendered.push_str(&quoted[1..quoted.len() - 1]);
+        } else {
+            rendered.push_str(&value.to_string());
+        }
+        remaining = &tail[end + 2..];
+    }
+    rendered.push_str(remaining);
+    serde_json::from_str(&rendered).map_err(|error| format!("Webhook 请求体不是有效 JSON：{error}"))
+}
+
+fn hook_payload(profile: &DeploymentProfile, run: &DeploymentRun) -> Result<serde_json::Value, String> {
+    let values = hook_template_values(profile, Some(run));
+    if hook_template_mode(profile) == DeploymentHookTemplate::Feishu {
+        let succeeded = run.status == "succeeded";
+        let title = format!("{} 部署{}：{}", if succeeded { "✅" } else { "🔴" }, if succeeded { "成功" } else { "失败" }, profile.name);
+        let content = format!(
+            "**任务**：{}\n**执行时间**：{} ~ {}\n**耗时**：{} 秒\n**压缩包大小**：{}\n**文件数量**：{}\n**触发方式**：{}\n**上传目录**：{}{}",
+            profile.name,
+            values["startedAt"].as_str().unwrap_or(""),
+            values["finishedAt"].as_str().unwrap_or(""),
+            values["durationSeconds"].as_i64().unwrap_or(0),
+            values["archiveSizeText"].as_str().unwrap_or("未打包"),
+            run.selected_file_count,
+            trigger_label(&run.trigger_type),
+            run.remote_destination_dir,
+            run.error.as_ref().map(|error| format!("\n**失败原因**：{error}")).unwrap_or_default(),
+        );
+        return Ok(json!({
+            "msg_type": "interactive",
+            "card": {
+                "config": { "wide_screen_mode": true, "update_multi": true },
+                "header": {
+                    "title": { "tag": "plain_text", "content": title },
+                    "template": if succeeded { "green" } else { "red" },
+                },
+                "elements": [{ "tag": "div", "text": { "tag": "lark_md", "content": content } }],
+            },
+        }));
+    }
+    if !profile.hook_body.trim().is_empty() {
+        return render_hook_template(&profile.hook_body, &values);
+    }
+    Ok(json!({
+        "event": "deployment.finished",
+        "summary": values["summary"],
+        "runId": values["runId"],
+        "deploymentId": values["deploymentId"],
+        "deploymentName": values["deploymentName"],
+        "bookmarkId": values["bookmarkId"],
+        "triggerType": values["triggerType"],
+        "status": values["status"],
+        "startedAt": values["startedAt"],
+        "finishedAt": values["finishedAt"],
+        "selectedFileCount": values["selectedFileCount"],
+        "archiveSize": values["archiveSize"],
+        "archiveSizeText": values["archiveSizeText"],
+        "durationSeconds": values["durationSeconds"],
+        "succeeded": values["succeeded"],
+        "uploadDirectory": values["uploadDirectory"],
+        "commandExitCode": values["commandExitCode"],
+        "error": values["error"],
+    }))
+}
+
+fn is_feishu_webhook(url: &str) -> bool {
+    reqwest::Url::parse(url).ok()
+        .and_then(|url| url.host_str().map(|host| host == "open.feishu.cn" || host == "open.larksuite.com"))
+        .unwrap_or(false)
+}
+
+fn hook_template_mode(profile: &DeploymentProfile) -> DeploymentHookTemplate {
+    profile.hook_template.unwrap_or_else(|| {
+        if profile.hook_body.trim().is_empty() && is_feishu_webhook(&profile.hook_url) {
+            DeploymentHookTemplate::Feishu
+        } else {
+            DeploymentHookTemplate::Custom
+        }
+    })
+}
+
+struct ProgressReporter {
+    app: AppHandle,
+    request_id: String,
+    state: Mutex<(String, u64, u64, Instant)>,
+}
+
+impl ProgressReporter {
+    fn phase(&self, phase: &str, total: u64) {
+        if let Ok(mut state) = self.state.lock() {
+            *state = (phase.into(), total, 0, Instant::now());
+            self.emit(&state);
+        }
+    }
+    fn advance(&self, bytes: u64) {
+        if let Ok(mut state) = self.state.lock() {
+            state.2 = state.2.saturating_add(bytes);
+            if state.3.elapsed() >= Duration::from_millis(100) || state.2 >= state.1 {
+                self.emit(&state);
+                state.3 = Instant::now();
+            }
+        }
+    }
+    fn emit(&self, state: &(String, u64, u64, Instant)) {
+        let _ = self.app.emit("app:event", AppEvent::DeploymentProgress(DeploymentProgress {
+            request_id: self.request_id.clone(), phase: state.0.clone(),
+            bytes_total: state.1, bytes_processed: state.2,
+        }));
+    }
 }
 #[tauri::command]
 pub async fn deployments_execute(
@@ -1178,10 +1602,11 @@ pub async fn deployments_execute(
     id: String,
     session_id: Option<String>,
     archive_file_name: Option<String>,
+    request_id: Option<String>,
 ) -> Result<DeploymentRun, String> {
     state
         .deployments
-        .execute(id, session_id, false, archive_file_name)
+        .execute(id, session_id, false, archive_file_name, request_id)
         .await
 }
 #[tauri::command]
@@ -1217,7 +1642,7 @@ pub fn deployment_run_remove(state: State<AppState>, ids: Vec<String>) -> Result
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::models::{ArchiveFormat, DeploymentSchedule, DeploymentSelection, DeploymentShell};
+    use crate::models::{ArchiveFormat, AuthType, BookmarkInput, DeploymentSchedule, DeploymentSelection, DeploymentShell};
 
     fn test_profile(root: &Path) -> DeploymentProfile {
         DeploymentProfile {
@@ -1233,10 +1658,165 @@ mod tests {
             archive_enabled: true,
             archive_format: ArchiveFormat::Zip,
             shell_template: String::new(),
-            shell: DeploymentShell::Sh,
+            shell: DeploymentShell::Bash,
             confirm_manual: true,
             schedule: DeploymentSchedule::default(),
+            hook_url: String::new(),
+            hook_template: None,
+            hook_body: String::new(),
         }
+    }
+
+    #[test]
+    fn connected_target_session_is_reused_for_scheduled_runs() {
+        let summary = |id: &str, bookmark_id: &str, status: SessionStatus| SessionSummary {
+            id: id.into(), bookmark_id: bookmark_id.into(), title: id.into(), status, error: None,
+        };
+        let sessions = vec![
+            summary("old-target", "target", SessionStatus::Disconnected),
+            summary("jump", "jump", SessionStatus::Connected),
+            summary("live-target", "target", SessionStatus::Connected),
+        ];
+        assert_eq!(connected_session_for_bookmark(sessions, "target"), Some("live-target".into()));
+        assert_eq!(connected_session_for_bookmark(vec![summary("jump", "jump", SessionStatus::Connected)], "target"), None);
+    }
+
+    #[test]
+    fn bundle_import_maps_connection_and_ids_without_partial_writes() {
+        let path = std::env::temp_dir().join(format!("luna-deployment-import-{}.db", Uuid::new_v4()));
+        let db = Database::open(&path, "luna-deployment-import-test").unwrap();
+        let target = db.save_bookmark(BookmarkInput {
+            id: None, name: "Target".into(), host: "example.com".into(), port: 22,
+            username: "test".into(), auth_type: AuthType::Agent,
+            private_key_path: String::new(), jump_bookmark_id: String::new(),
+            group_name: String::new(), favorite: false, keepalive_enabled: true,
+            keepalive_interval_seconds: 15, keepalive_count_max: 3, note: String::new(),
+        }).unwrap();
+        let mut source = test_profile(&std::env::temp_dir());
+        source.name = " release ".into();
+        source.schedule = DeploymentSchedule { enabled: true, daily_time: "09:30".into() };
+        source.hook_url = "https://example.com/hook".into();
+        source.hook_body = r#"{"task":{{deploymentName}}}"#.into();
+        let bundle = DeploymentBundle {
+            format: DEPLOYMENT_BUNDLE_FORMAT.into(), version: 1,
+            exported_at: Utc::now().to_rfc3339(), source_connection: "Source".into(),
+            tasks: vec![source.clone()],
+        };
+        let restored: DeploymentBundle = serde_json::from_str(&serde_json::to_string(&bundle).unwrap()).unwrap();
+        let imported = import_profiles_into_db(&db, &target.id, restored.tasks).unwrap();
+        assert_eq!(imported.len(), 1);
+        assert_ne!(imported[0].id, source.id);
+        assert_eq!(imported[0].bookmark_id, target.id);
+        assert_eq!(imported[0].name, "release");
+        assert!(imported[0].schedule.enabled);
+        assert_eq!(imported[0].hook_url, source.hook_url);
+        assert_eq!(profiles(&db).len(), 1);
+
+        let mut invalid = source.clone();
+        invalid.remote_directory = "../invalid".into();
+        assert!(import_profiles_into_db(&db, &target.id, vec![source.clone(), invalid]).is_err());
+        assert_eq!(profiles(&db).len(), 1);
+        let mut empty_schedule = source.clone();
+        empty_schedule.selection.included.clear();
+        assert!(import_profiles_into_db(&db, &target.id, vec![empty_schedule]).is_err());
+        assert_eq!(profiles(&db).len(), 1);
+        assert!(import_profiles_into_db(&db, "missing-connection", vec![source]).is_err());
+        assert_eq!(profiles(&db).len(), 1);
+        drop(db);
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn bundle_accepts_older_profile_defaults() {
+        let mut value = serde_json::to_value(test_profile(&std::env::temp_dir())).unwrap();
+        let task = value.as_object_mut().unwrap();
+        task.remove("selection");
+        task.remove("archiveFormat");
+        task.remove("schedule");
+        task.remove("hookUrl");
+        task.remove("hookTemplate");
+        task.remove("hookBody");
+        let bundle = json!({
+            "format": DEPLOYMENT_BUNDLE_FORMAT, "version": 1,
+            "exportedAt": "2026-09-30T00:00:00Z", "sourceConnection": "Legacy",
+            "tasks": [value],
+        });
+        let restored: DeploymentBundle = serde_json::from_value(bundle).unwrap();
+        let profile = &restored.tasks[0];
+        assert_eq!(profile.selection.included, ["."]);
+        assert_eq!(profile.archive_format, ArchiveFormat::Zip);
+        assert!(!profile.schedule.enabled);
+        assert!(profile.hook_url.is_empty());
+    }
+
+    #[test]
+    fn hook_payload_contains_message_and_event_fields() {
+        let mut profile = test_profile(Path::new("/tmp"));
+        profile.name = "test \"quoted\" {{status}}".into();
+        let run = DeploymentRun {
+            id: "run-1".into(), deployment_id: profile.id.clone(), bookmark_id: profile.bookmark_id.clone(),
+            trigger_type: "manual".into(), started_at: "2026-09-30T00:00:00Z".into(),
+            finished_at: Some("2026-09-30T00:01:00Z".into()), status: "failed".into(),
+            selected_file_count: 1, archive_enabled: true, archive_size: Some(1),
+            manifest_sha256: None, remote_destination_dir: "/srv/app".into(),
+            command_exit_code: Some(1), stdout: String::new(), stderr: String::new(),
+            error: Some("bad \"quote\"\nnext line".into()), manifest: None,
+            command_line: String::new(), hook_error: None,
+        };
+        let body = hook_payload(&profile, &run).unwrap();
+        let local_finished = format_hook_datetime(run.finished_at.as_deref().unwrap());
+        assert_eq!(body["deploymentName"], profile.name);
+        assert_eq!(body["error"], run.error.as_deref().unwrap());
+        assert_eq!(body["commandExitCode"], 1);
+        assert!(body["summary"].as_str().unwrap().contains("bad \"quote\""));
+        assert_eq!(body["status"], "failed");
+        profile.hook_url = "https://open.feishu.cn/open-apis/bot/v2/hook/test".into();
+        let feishu = hook_payload(&profile, &run).unwrap();
+        assert_eq!(feishu["msg_type"], "interactive");
+        assert_eq!(feishu["card"]["header"]["template"], "red");
+        assert!(feishu["card"]["header"]["title"]["content"].as_str().unwrap().contains("部署失败"));
+        assert!(feishu["card"]["elements"][0]["text"]["content"].as_str().unwrap().contains("bad \"quote\""));
+        assert!(feishu["card"]["elements"][0]["text"]["content"].as_str().unwrap().contains(&local_finished));
+        assert!(feishu.get("event").is_none());
+        profile.hook_template = Some(DeploymentHookTemplate::Custom);
+        profile.hook_body = r#"{"msg_type":"text","content":{"text":{{summary}}},"task":{{taskName}},"finished":{{finishedAt}},"archiveBytes":{{archiveSize}},"files":{{selectedFileCount}},"success":{{succeeded}}}"#.into();
+        let custom = hook_payload(&profile, &run).unwrap();
+        assert_eq!(custom["task"], profile.name);
+        assert_eq!(custom["finished"], local_finished);
+        assert_eq!(custom["archiveBytes"], 1);
+        assert_eq!(custom["files"], 1);
+        assert_eq!(custom["success"], false);
+        assert!(custom["content"]["text"].as_str().unwrap().contains("bad \"quote\""));
+        let inline = render_hook_template(r#"{"message":"Task: {{taskName}}; {{error}}"}"#, &hook_template_values(&profile, Some(&run))).unwrap();
+        assert_eq!(inline["message"], "Task: test \"quoted\" {{status}}; bad \"quote\"\nnext line");
+        let old_syntax = render_hook_template(r#"{"task":{{json.taskName}}}"#, &hook_template_values(&profile, Some(&run))).unwrap();
+        assert_eq!(old_syntax["task"], profile.name);
+        let mut succeeded = run.clone();
+        succeeded.status = "succeeded".into();
+        succeeded.archive_size = None;
+        succeeded.error = None;
+        let success_body = hook_payload(&profile, &succeeded).unwrap();
+        assert_eq!(success_body["success"], true);
+        assert!(success_body["archiveBytes"].is_null());
+        profile.hook_template = Some(DeploymentHookTemplate::Feishu);
+        let success_card = hook_payload(&profile, &succeeded).unwrap();
+        assert_eq!(success_card["card"]["header"]["template"], "green");
+        assert!(success_card["card"]["header"]["title"]["content"].as_str().unwrap().contains("部署成功"));
+        assert!(success_card["card"]["elements"][0]["text"]["content"].as_str().unwrap().contains("未打包"));
+        assert!(render_hook_template("{\"x\":{{unknown}}}", &hook_template_values(&profile, Some(&run))).is_err());
+        assert!(render_hook_template("{\"x\":{{status}}", &hook_template_values(&profile, Some(&run))).is_err());
+        let mut legacy = serde_json::to_value(test_profile(Path::new("/tmp"))).unwrap();
+        let fields = legacy.as_object_mut().unwrap();
+        fields.remove("hookTemplate");
+        fields.insert("hookMethod".into(), json!("PUT"));
+        fields.insert("hookHeaders".into(), json!("{\"X-Test\":\"1\"}"));
+        fields.insert("hookBody".into(), json!("legacy"));
+        fields.insert("hookFormat".into(), json!("feishu"));
+        let restored: DeploymentProfile = serde_json::from_value(legacy).unwrap();
+        assert!(restored.hook_url.is_empty());
+        assert_eq!(restored.hook_template, Some(DeploymentHookTemplate::Feishu));
+        assert_eq!(restored.hook_body, "legacy");
+        assert!(serde_json::to_value(restored).unwrap().get("hookMethod").is_none());
     }
 
     #[test]
@@ -1261,6 +1841,18 @@ mod tests {
         fs::remove_dir_all(root).unwrap();
     }
 
+    #[test]
+    fn hash_reports_every_byte_read() {
+        let path = std::env::temp_dir().join(format!("luna-preview-progress-{}", Uuid::new_v4()));
+        let contents = vec![42u8; 150_000];
+        fs::write(&path, &contents).unwrap();
+        let mut reported = 0;
+        let (size, _) = sha256_file(&path, |count| reported += count).unwrap();
+        assert_eq!(size, contents.len() as u64);
+        assert_eq!(reported, size);
+        fs::remove_file(path).unwrap();
+    }
+
     #[cfg(unix)]
     #[test]
     fn selected_symlink_is_rejected() {
@@ -1283,7 +1875,14 @@ mod tests {
         assert_eq!(profile.selection.included, vec!["."]);
         assert!(!profile.archive_enabled);
         assert_eq!(profile.archive_format, ArchiveFormat::Zip);
-        assert_eq!(profile.shell, DeploymentShell::Sh);
+        assert_eq!(profile.shell, DeploymentShell::Bash);
+    }
+
+    #[test]
+    fn legacy_sh_profile_runs_and_saves_as_bash() {
+        let profile: DeploymentProfile = serde_json::from_value(json!({"id": Uuid::new_v4().to_string(), "bookmarkId": "b", "name": "old", "workspace": "/tmp/old", "remoteDirectory": "/srv", "shell": "sh"})).unwrap();
+        assert_eq!(profile.shell, DeploymentShell::Bash);
+        assert_eq!(serde_json::to_value(profile).unwrap()["shell"], "bash");
     }
 
     #[test]
@@ -1298,7 +1897,7 @@ mod tests {
             sha256: format!("{:x}", Sha256::digest(b"hello")),
         };
         let archive = root.join("package.zip");
-        assert!(build_zip(&snapshot, &archive, &[file], &AtomicBool::new(false)).unwrap() > 0);
+        assert!(build_zip(&snapshot, &archive, &[file], &AtomicBool::new(false), None).unwrap() > 0);
         let archive_bytes = fs::read(&archive).unwrap();
         let flags = u16::from_le_bytes([archive_bytes[6], archive_bytes[7]]);
         assert_ne!(flags & (1 << 11), 0, "ZIP filename must be marked UTF-8");
@@ -1324,7 +1923,7 @@ mod tests {
             sha256: String::new(),
         };
         let archive = root.join("package.tar.gz");
-        assert!(build_tar_gz(&snapshot, &archive, &[file], &AtomicBool::new(false)).unwrap() > 0);
+        assert!(build_tar_gz(&snapshot, &archive, &[file], &AtomicBool::new(false), None).unwrap() > 0);
         let gzip = flate2::read::GzDecoder::new(fs::File::open(&archive).unwrap());
         let mut tar = tar::Archive::new(gzip);
         let mut entries = tar.entries().unwrap();
@@ -1376,16 +1975,19 @@ mod tests {
             Some((archive.into(), format!("/srv/space '中文/{archive}")))
         );
         let command = shell_command(&profile, &files, Some(archive));
+        assert!(command.contains("UPLOAD_DIR='/srv/space '\\''中文'"));
+        assert!(command.contains(&format!("FILE_NAME='{archive}'")));
+        assert!(command.contains(&format!("FILE_PATH='/srv/space '\\''中文/{archive}'")));
         assert!(command.contains(&format!("LUNA_FILE_NAME='{archive}'")));
         assert!(command.contains(&format!("LUNA_FILE_PATH='/srv/space '\\''中文/{archive}'")));
-        assert!(command.contains(r#"sh -lc 'ls "${LUNA_FILE_PATH}"'"#));
+        assert!(command.contains(r#"bash -lc 'ls "${LUNA_FILE_PATH}"'"#));
         assert!(!command.contains("staging"));
-
-        profile.shell = DeploymentShell::Bash;
-        assert!(
-            shell_command(&profile, &files, Some(archive))
-                .contains(r#"bash -lc 'ls "${LUNA_FILE_PATH}"'"#)
-        );
+        profile.shell_template = "ls {{FILE_PATH}} && printf '%s' '{{FILE_NAME}}'".into();
+        let command = shell_command(&profile, &files, Some(archive));
+        assert!(command.contains("ls \"${FILE_PATH}\""));
+        assert!(command.contains("printf"));
+        assert!(command.contains("\"${FILE_NAME}\""));
+        assert!(!command.contains("{{FILE_PATH}}"));
 
         profile.archive_enabled = false;
         assert_eq!(

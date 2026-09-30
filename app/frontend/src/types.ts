@@ -127,9 +127,12 @@ export interface DeploymentProfile {
   archiveEnabled: boolean
   archiveFormat: 'zip' | 'tarGz'
   shellTemplate: string
-  shell: 'sh' | 'bash'
+  shell: 'bash'
   confirmManual: boolean
   schedule: { enabled: boolean; dailyTime: string }
+  hookUrl: string
+  hookTemplate: 'custom' | 'feishu'
+  hookBody: string
 }
 
 export interface DeploymentFile {
@@ -147,11 +150,35 @@ export interface DeploymentPreview {
   commandPreview: string
 }
 
+export interface DeploymentBundle {
+  format: string
+  version: number
+  exportedAt: string
+  sourceConnection: string
+  tasks: DeploymentProfile[]
+}
+
+export interface DeploymentPreviewProgress {
+  requestId: string
+  phase: 'saving' | 'scanning' | 'hashing'
+  filesTotal: number
+  filesProcessed: number
+  bytesTotal: number
+  bytesProcessed: number
+}
+
+export interface DeploymentProgress {
+  requestId: string
+  phase: 'preparing' | 'snapshot' | 'packaging' | 'connecting' | 'uploading' | 'executing-command'
+  bytesTotal: number
+  bytesProcessed: number
+}
+
 export interface DeploymentRun {
   id: string
   deploymentId: string
   bookmarkId: string
-  triggerType: 'manual' | 'scheduled'
+  triggerType: 'manual' | 'scheduled' | 'api'
   startedAt: string
   finishedAt?: string
   status: string
@@ -166,9 +193,23 @@ export interface DeploymentRun {
   error?: string
   manifest?: string
   commandLine: string
+  hookError?: string
 }
 
 export type TerminalBackgroundFit = 'cover' | 'contain' | 'stretch' | 'tile'
+export interface WebApiConfig {
+  enabled: boolean
+  port: number
+  allowRemote: boolean
+}
+
+export interface WebApiStatus {
+  config: WebApiConfig
+  running: boolean
+  token?: string
+  error?: string
+}
+
 export type AppIconId = 'ssh' | 'classic' | 'neon' | 'light'
 export type UiTheme = 'system' | 'light' | 'dark'
 export type AppLanguage = string
@@ -340,6 +381,8 @@ export type AppEvent =
   | { type: 'transfer'; payload: TransferTask }
   | { type: 'tunnel'; payload: TunnelSummary & { removed?: boolean } }
   | { type: 'transfer-conflict'; payload: { taskId: string; sourcePath: string; destinationPath: string } }
+  | { type: 'deployment-preview-progress'; payload: DeploymentPreviewProgress }
+  | { type: 'deployment-progress'; payload: DeploymentProgress }
   | { type: 'menu-command'; payload: MenuCommand }
 
 export interface TransferRequest {
@@ -410,21 +453,29 @@ export interface AppApi {
     enqueue(request: TransferRequest): Promise<TransferTask[]>
     cancel(id: string): Promise<void>
     retry(id: string, sessionId: string): Promise<void>
-    clearCompleted(): Promise<void>
+    clearHistory(): Promise<string[]>
     resolveConflict(id: string, resolution: ConflictResolution, applyToBatch: boolean): void
   }
   deployments: {
     list(bookmarkId: string): Promise<DeploymentProfile[]>
     save(profile: DeploymentProfile): Promise<DeploymentProfile>
     remove(id: string): Promise<void>
+    exportBundle(bookmarkId: string): Promise<string | null>
+    pickBundle(): Promise<DeploymentBundle | null>
+    importBundle(bookmarkId: string, tasks: DeploymentProfile[]): Promise<DeploymentProfile[]>
     tree(workspace: string, path: string): Promise<DirectoryEntry[]>
-    preview(id: string, sessionId?: string): Promise<DeploymentPreview>
-    execute(id: string, sessionId?: string, archiveFileName?: string): Promise<DeploymentRun>
+    preview(profile: DeploymentProfile, requestId: string): Promise<DeploymentPreview>
+    execute(id: string, sessionId?: string, archiveFileName?: string, requestId?: string): Promise<DeploymentRun>
     confirm(runId: string): Promise<DeploymentRun>
     cancel(runId: string): Promise<void>
     runsList(deploymentId: string): Promise<DeploymentRun[]>
     runGet(id: string): Promise<DeploymentRun | null>
     runsRemove(ids: string[]): Promise<void>
+  }
+  webApi: {
+    get(): Promise<WebApiStatus>
+    save(config: WebApiConfig): Promise<WebApiStatus>
+    regenerateToken(): Promise<WebApiStatus>
   }
   tunnels: {
     listProfiles(bookmarkId: string): Promise<PortForwardProfile[]>

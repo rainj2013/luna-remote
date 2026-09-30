@@ -9,6 +9,7 @@ mod sessions;
 mod ssh_config;
 mod transfers;
 mod tunnels;
+mod web_api;
 #[cfg(target_os = "windows")]
 mod windows_app_icon;
 
@@ -154,13 +155,17 @@ pub fn run() {
                 TransferManager::new(app.handle().clone(), database.clone(), sessions.clone());
             let tunnels = TunnelManager::new(app.handle().clone(), sessions.clone());
             let deployments =
-                deployment::DeploymentManager::new(database.clone(), sessions.clone());
+                deployment::DeploymentManager::new(database.clone(), sessions.clone(), app.handle().clone());
             deployments.start_scheduler();
+            let web_api = web_api::WebApiManager::new(database.clone(), deployments.clone());
+            let startup_api = web_api.clone();
+            tauri::async_runtime::spawn(async move { startup_api.start_saved().await; });
             app.manage(AppState {
                 db: database,
                 sessions,
                 transfers,
                 deployments,
+                web_api,
                 tunnels,
                 ai_diagnostics: ai::AiDiagnostics::default(),
                 allowed_imports: Mutex::new(HashSet::new()),
@@ -212,10 +217,13 @@ pub fn run() {
             transfers_cancel,
             transfers_retry,
             transfers_resolve_conflict,
-            transfers_clear_completed,
+            transfers_clear_history,
             deployments_list,
             deployments_save,
             deployments_remove,
+            deployments_export_bundle,
+            deployments_pick_bundle,
+            deployments_import_bundle,
             deployments_tree,
             deployments_preview,
             deployments_execute,
@@ -224,6 +232,9 @@ pub fn run() {
             deployment_runs_list,
             deployment_run_get,
             deployment_run_remove,
+            web_api::web_api_get,
+            web_api::web_api_save,
+            web_api::web_api_regenerate_token,
             tunnels_list_profiles,
             tunnels_save_profile,
             tunnels_remove_profile,

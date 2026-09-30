@@ -166,7 +166,7 @@ export function SftpPane({ sessionId, bookmarkId, connected, visible, onError, o
     if (!sessionId || !connected) throw new Error(t('sftp.sshSessionIsNotConnected'))
     const key = `${sessionId}\0${path}`
     if (!force) { const pending = remoteInflight.current.get(key); if (pending) return await pending }
-    const request = (async () => { try { return await window.api.files.listRemote(sessionId, path) } catch (error) { if (!errorMessage(error).includes('超时')) throw error; return await window.api.files.listRemote(sessionId, path) } })()
+    const request = window.api.files.listRemote(sessionId, path)
     remoteInflight.current.set(key, request)
     try {
       const entries = await request
@@ -442,7 +442,7 @@ export function SftpPane({ sessionId, bookmarkId, connected, visible, onError, o
         <header><strong id="file-delete-title">{t('sftp.deleteFiles', { side: fileDeleteDialog.remote ? t('common.remote') : t('common.local') })}</strong><button type="button" className="icon-button" title={t('common.close')} disabled={fileDeleteDialog.submitting} onClick={() => setFileDeleteDialog(null)}><X size={17} /></button></header>
         <form className="file-delete-confirm" onSubmit={(event) => void confirmDeleteEntries(event)}>
           <div className="file-delete-heading"><Trash2 size={22} /><div><strong>{t('sftp.permanentlyDeleteValueSelectedItems', { value0: fileDeleteDialog.paths.length })}</strong><span>{t('sftp.thisCannotBeUndoneCheckTheSelectedItems')}</span></div></div>
-          <ul>{fileDeleteDialog.paths.slice(0, 5).map((path) => <li key={path} title={path}>{entryName(path)}</li>)}{fileDeleteDialog.paths.length > 5 && <li>{t('sftp.valueMore', { value0: fileDeleteDialog.paths.length - 5 })}</li>}</ul>
+          <ul className={fileDeleteDialog.remote ? 'remote-targets' : undefined}>{(fileDeleteDialog.remote ? fileDeleteDialog.paths : fileDeleteDialog.paths.slice(0, 5)).map((path) => <li key={path} title={path}>{fileDeleteDialog.remote ? path : entryName(path)}</li>)}{!fileDeleteDialog.remote && fileDeleteDialog.paths.length > 5 && <li>{t('sftp.valueMore', { value0: fileDeleteDialog.paths.length - 5 })}</li>}</ul>
           {fileDeleteDialog.error && <small className="error-text">{fileDeleteDialog.error}</small>}
           <div className="dialog-actions"><button type="button" autoFocus className="secondary-button" disabled={fileDeleteDialog.submitting} onClick={() => setFileDeleteDialog(null)}>{t('common.cancel')}</button><button type="submit" className="danger-button" disabled={fileDeleteDialog.submitting}><Trash2 size={15} />{fileDeleteDialog.submitting ? t('sftp.deleting') : t('sftp.deletePermanently')}</button></div>
         </form>

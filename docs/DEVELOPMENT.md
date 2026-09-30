@@ -99,7 +99,7 @@ cargo --version
 npm run dev
 ```
 
-该命令会在 `127.0.0.1:1420` 启动 Vite，并编译、启动 Tauri 桌面应用。首次 Rust 编译耗时会明显长于后续增量编译。出现 Luna Remote 窗口即表示环境搭建完成。
+该命令会在 `127.0.0.1:1430` 启动 Vite，并编译、启动 Tauri 桌面应用。首次 Rust 编译耗时会明显长于后续增量编译。出现 Luna Remote 窗口即表示环境搭建完成。
 
 只启动或构建 Web 前端可以使用下面的命令。
 
@@ -237,18 +237,18 @@ Windows PowerShell：
 Remove-Item .cargo/config.toml
 ```
 
-### 端口 1420 被占用
+### 端口 1430 被占用
 
-Vite 使用固定端口 `1420`。关闭占用该端口的进程后重新运行 `npm run dev`。
+Vite 使用固定端口 `1430`。关闭占用该端口的进程后重新运行 `npm run dev`。
 
 ```bash
-lsof -nP -iTCP:1420 -sTCP:LISTEN
+lsof -nP -iTCP:1430 -sTCP:LISTEN
 ```
 
 Windows PowerShell 可以使用下面的命令。
 
 ```powershell
-Get-NetTCPConnection -LocalPort 1420 -ErrorAction SilentlyContinue
+Get-NetTCPConnection -LocalPort 1430 -ErrorAction SilentlyContinue
 ```
 
 ### Windows 无法编译或启动

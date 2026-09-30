@@ -31,6 +31,10 @@ impl<T: AsyncRead + AsyncWrite + Unpin + Send> AsyncTransport for T {}
 type Transport = Pin<Box<dyn AsyncTransport>>;
 
 const REMOTE_EXEC_TIMEOUT: Duration = Duration::from_secs(12);
+const REMOTE_LIST_EXEC_TIMEOUT: Duration = Duration::from_secs(6);
+const REMOTE_REMOVE_EXEC_TIMEOUT: Duration = Duration::from_secs(600);
+const REMOTE_SFTP_OPEN_TIMEOUT: Duration = Duration::from_secs(15);
+const REMOTE_SFTP_LIST_TIMEOUT: Duration = Duration::from_secs(30);
 const REMOTE_EXEC_OUTPUT_LIMIT: usize = 16 * 1024 * 1024;
 const DEFAULT_TERMINAL_SIZE: (u32, u32) = (100, 30);
 const REMOTE_LIST_MODE_UNKNOWN: u8 = 0;
@@ -47,14 +51,22 @@ try:
 except (AttributeError,UnicodeDecodeError):
  path=raw_path
 items=[]
-for name in os.listdir(path):
- full_path=os.path.join(path,name)
- try:
-  info=os.lstat(full_path)
-  kind='symlink' if stat.S_ISLNK(info.st_mode) else 'directory' if stat.S_ISDIR(info.st_mode) else 'file' if stat.S_ISREG(info.st_mode) else 'other'
- except OSError:
-  kind='other'
- items.append({'name':name,'path':full_path,'kind':kind})
+if hasattr(os,'scandir'):
+ for entry in os.scandir(path):
+  try:
+   kind='symlink' if entry.is_symlink() else 'directory' if entry.is_dir(follow_symlinks=False) else 'file' if entry.is_file(follow_symlinks=False) else 'other'
+  except OSError:
+   kind='other'
+  items.append({'name':entry.name,'path':os.path.join(path,entry.name),'kind':kind})
+else:
+ for name in os.listdir(path):
+  full_path=os.path.join(path,name)
+  try:
+   info=os.lstat(full_path)
+   kind='symlink' if stat.S_ISLNK(info.st_mode) else 'directory' if stat.S_ISDIR(info.st_mode) else 'file' if stat.S_ISREG(info.st_mode) else 'other'
+  except OSError:
+   kind='other'
+  items.append({'name':name,'path':full_path,'kind':kind})
 json_text=json.dumps(items,separators=(',',':'),ensure_ascii=False)
 try:
  json_bytes=json_text.encode('utf-8','replace')
@@ -965,6 +977,11 @@ impl SessionManager {
     }
     pub async fn list_remote(&self, id: &str, path: String) -> Result<Vec<DirectoryEntry>, String> {
         let active = self.get(id)?;
+        if active.remote_list_mode.load(Ordering::Acquire) == REMOTE_LIST_MODE_UNKNOWN
+            && active.sftp.lock().await.is_some()
+        {
+            active.remote_list_mode.store(REMOTE_LIST_MODE_SFTP, Ordering::Release);
+        }
         if active.remote_list_mode.load(Ordering::Acquire) != REMOTE_LIST_MODE_SFTP {
             match self.list_remote_with_exec(&active, &path).await {
                 Ok(entries) => {
@@ -978,7 +995,11 @@ impl SessionManager {
                         .remote_list_mode
                         .store(REMOTE_LIST_MODE_SFTP, Ordering::Release);
                 }
-                Err(RemoteExecError::Timeout) => {}
+                Err(RemoteExecError::Timeout) => {
+                    active
+                        .remote_list_mode
+                        .store(REMOTE_LIST_MODE_SFTP, Ordering::Release);
+                }
                 Err(RemoteExecError::Failed(message)) => return Err(message),
             }
         }
@@ -991,7 +1012,7 @@ impl SessionManager {
     ) -> Result<Vec<DirectoryEntry>, RemoteExecError> {
         let encoded_path = STANDARD.encode(path.as_bytes());
         let command = remote_list_command(&encoded_path);
-        let output = self.exec_remote(active, &command).await?;
+        let output = self.exec_remote_with_timeout(active, &command, REMOTE_LIST_EXEC_TIMEOUT).await?;
         let parsed = parse_remote_entries(&output);
         #[cfg(debug_assertions)]
         match &parsed {
@@ -1012,11 +1033,12 @@ impl SessionManager {
         id: &str,
         path: String,
     ) -> Result<Vec<DirectoryEntry>, String> {
-        let entries = self
-            .sftp(id)
-            .await?
-            .read_dir(path)
+        let sftp = tokio::time::timeout(REMOTE_SFTP_OPEN_TIMEOUT, self.sftp(id))
             .await
+            .map_err(|_| "打开远端 SFTP 连接超时".to_string())??;
+        let entries = tokio::time::timeout(REMOTE_SFTP_LIST_TIMEOUT, sftp.read_dir(path))
+            .await
+            .map_err(|_| "读取远端目录超时，请稍后重试".to_string())?
             .map_err(|e| e.to_string())?;
         Ok(entries
             .map(|entry| {
@@ -1042,7 +1064,15 @@ impl SessionManager {
         active: &ActiveSession,
         command: &str,
     ) -> Result<String, RemoteExecError> {
-        let deadline = tokio::time::Instant::now() + REMOTE_EXEC_TIMEOUT;
+        self.exec_remote_with_timeout(active, command, REMOTE_EXEC_TIMEOUT).await
+    }
+    async fn exec_remote_with_timeout(
+        &self,
+        active: &ActiveSession,
+        command: &str,
+        timeout: Duration,
+    ) -> Result<String, RemoteExecError> {
+        let deadline = tokio::time::Instant::now() + timeout;
         let mut channel = tokio::time::timeout_at(deadline, async {
             let handle = active.handle.lock().await;
             let channel = handle
@@ -1058,11 +1088,11 @@ impl SessionManager {
         match tokio::time::timeout_at(deadline, channel.exec(true, command)).await {
             Ok(Ok(())) => {}
             Ok(Err(_)) => {
-                let _ = channel.close().await;
+                let _ = tokio::time::timeout(Duration::from_secs(1), channel.close()).await;
                 return Err(RemoteExecError::Unavailable);
             }
             Err(_) => {
-                let _ = channel.close().await;
+                let _ = tokio::time::timeout(Duration::from_secs(1), channel.close()).await;
                 return Err(RemoteExecError::Timeout);
             }
         }
@@ -1074,7 +1104,7 @@ impl SessionManager {
                 match message {
                     ChannelMsg::Data { data } => {
                         if stdout.len().saturating_add(data.len()) > REMOTE_EXEC_OUTPUT_LIMIT {
-                            let _ = channel.close().await;
+                            let _ = tokio::time::timeout(Duration::from_secs(1), channel.close()).await;
                             return Err(RemoteExecError::Failed("远端目录内容过大".into()));
                         }
                         stdout.extend_from_slice(&data);
@@ -1116,7 +1146,7 @@ impl SessionManager {
         match tokio::time::timeout_at(deadline, read_output).await {
             Ok(result) => result,
             Err(_) => {
-                let _ = channel.close().await;
+                let _ = tokio::time::timeout(Duration::from_secs(1), channel.close()).await;
                 Err(RemoteExecError::Timeout)
             }
         }
@@ -1136,9 +1166,26 @@ impl SessionManager {
             .map_err(|e| e.to_string())
     }
     pub async fn remove_remote(&self, id: &str, paths: Vec<String>) -> Result<(), String> {
-        let sftp = self.sftp(id).await?;
-        for path in paths {
-            self.remove_remote_entry(&sftp, path).await?;
+        // Validate the entire selection before deleting the first entry.
+        let removals = paths.iter().map(|path| remote_remove_command(path)).collect::<Result<Vec<_>, _>>()?;
+        if removals.is_empty() {
+            return Ok(());
+        }
+        let home = self.remote_home(id).await?;
+        protect_remote_home(&removals, &home)?;
+        let active = self.get(id)?;
+        let mut fallback_sftp = None;
+        for (path, command) in removals {
+            if fallback_sftp.is_none() {
+                match self.exec_remote_with_timeout(&active, &command, REMOTE_REMOVE_EXEC_TIMEOUT).await {
+                    Ok(_) => continue,
+                    Err(RemoteExecError::Unavailable) => {}
+                    Err(RemoteExecError::Timeout) => return Err("远端删除超时，命令可能仍在执行".into()),
+                    Err(RemoteExecError::Failed(message)) => return Err(message),
+                }
+                fallback_sftp = Some(self.sftp(id).await?);
+            }
+            self.remove_remote_entry(fallback_sftp.as_ref().expect("SFTP fallback"), path).await?;
         }
         Ok(())
     }
@@ -1211,6 +1258,29 @@ fn shell_quote(value: &str) -> String {
     format!("'{}'", value.replace('\'', "'\"'\"'"))
 }
 
+fn remote_remove_command(path: &str) -> Result<(String, String), String> {
+    let path = path.trim_end_matches('/');
+    if !path.starts_with('/') || path.chars().any(char::is_control) {
+        return Err("远端删除只接受规范的绝对路径".into());
+    }
+    let components = path.split('/').skip(1).collect::<Vec<_>>();
+    if components.iter().any(|part| part.is_empty() || *part == "." || *part == "..") {
+        return Err("远端删除路径不能包含空目录、. 或 ..".into());
+    }
+    if components.len() < 2 {
+        return Err("不能删除远端根目录或根目录下的顶层路径".into());
+    }
+    Ok((path.into(), format!("command rm -r -- {}", shell_quote(path))))
+}
+
+fn protect_remote_home(removals: &[(String, String)], home: &str) -> Result<(), String> {
+    if removals.iter().any(|(path, _)| path == home.trim_end_matches('/')) {
+        Err("不能删除远端用户主目录".into())
+    } else {
+        Ok(())
+    }
+}
+
 fn remote_list_command(encoded_path: &str) -> String {
     let script = shell_quote(REMOTE_LIST_SCRIPT);
     let path = shell_quote(encoded_path);
@@ -1267,7 +1337,7 @@ impl Utf8Decoder {
 mod tests {
     use super::{
         EntryKind, REMOTE_LIST_MARKER, REMOTE_LIST_SCRIPT, Utf8Decoder, parse_remote_entries,
-        remote_list_command, shell_quote,
+        protect_remote_home, remote_list_command, remote_remove_command, shell_quote,
     };
 
     #[test]
@@ -1276,9 +1346,25 @@ mod tests {
     }
 
     #[test]
-    fn remote_directory_script_uses_legacy_python_apis() {
+    fn remote_remove_uses_one_quoted_argument_and_protects_root() {
+        let path = "/tmp/it's here; touch /tmp/unwanted";
+        assert_eq!(
+            remote_remove_command(path).unwrap(),
+            (path.into(), format!("command rm -r -- {}", shell_quote(path)))
+        );
+        assert_eq!(remote_remove_command("/tmp/link/").unwrap(), ("/tmp/link".into(), "command rm -r -- '/tmp/link'".into()));
+        for path in ["", "/", "//", "/etc", "relative/file", "/tmp/..", "/tmp/../", "/tmp/./file", "/tmp//file", ".", "..", "/tmp/\0bad", "/tmp/\nbad"] {
+            assert!(remote_remove_command(path).is_err(), "{path:?}");
+        }
+        let removals = vec![remote_remove_command("/home/alice").unwrap()];
+        assert!(protect_remote_home(&removals, "/home/alice/").is_err());
+        assert!(protect_remote_home(&removals, "/home/bob").is_ok());
+    }
+
+    #[test]
+    fn remote_directory_script_keeps_legacy_fallback() {
         assert!(!REMOTE_LIST_SCRIPT.contains("os.fsdecode"));
-        assert!(!REMOTE_LIST_SCRIPT.contains("os.scandir"));
+        assert!(REMOTE_LIST_SCRIPT.contains("hasattr(os,'scandir')"));
         assert!(REMOTE_LIST_SCRIPT.contains("os.listdir"));
     }
 

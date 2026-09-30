@@ -29,6 +29,7 @@ pub struct AppState {
     pub sessions: Arc<SessionManager>,
     pub transfers: Arc<TransferManager>,
     pub deployments: Arc<crate::deployment::DeploymentManager>,
+    pub web_api: Arc<crate::web_api::WebApiManager>,
     pub tunnels: Arc<TunnelManager>,
     pub ai_diagnostics: ai::AiDiagnostics,
     pub allowed_imports: Mutex<HashSet<PathBuf>>,
@@ -1201,8 +1202,8 @@ pub fn transfers_resolve_conflict(
         .resolve_conflict(&id, resolution, apply_to_batch)
 }
 #[tauri::command]
-pub fn transfers_clear_completed(state: State<AppState>) -> Result<(), String> {
-    state.transfers.clear_completed()
+pub fn transfers_clear_history(state: State<AppState>) -> Result<Vec<String>, String> {
+    state.transfers.clear_history()
 }
 
 #[tauri::command]

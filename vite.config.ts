@@ -6,7 +6,7 @@ export default defineConfig({
   root: resolve('app/frontend'),
   clearScreen: false,
   plugins: [react()],
-  server: { port: 1420, strictPort: true },
+  server: { port: 1430, strictPort: true },
   envPrefix: ['VITE_', 'TAURI_'],
   build: {
     outDir: resolve('app/frontend/dist'),

@@ -180,8 +180,10 @@ impl TransferManager {
         Ok(())
     }
 
-    pub fn clear_completed(&self) -> Result<(), String> {
-        self.db.clear_completed()
+    pub fn clear_history(&self) -> Result<Vec<String>, String> {
+        let tasks = self.tasks.lock().map_err(|_| "传输状态锁已损坏".to_string())?;
+        let active_ids = tasks.keys().cloned().collect();
+        self.db.clear_transfer_history(&active_ids)
     }
 
     pub fn resolve_conflict(&self, id: &str, resolution: ConflictResolution, apply_to_batch: bool) {

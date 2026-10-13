@@ -1,9 +1,10 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { ArrowRight, Bookmark as BookmarkIcon, Bot, Check, ChevronDown, ChevronRight, CircleHelp, CirclePlus, Copy, Download, Edit3, ExternalLink, Eye, EyeOff, FileInput, FileJson2, Folder, FolderOpen, FolderPlus, GripVertical, History as HistoryIcon, Image as ImageIcon, Info, KeyRound, Languages, Minus, Monitor, Moon, Network, Palette, PanelLeftClose, PanelLeftOpen, Play, Plug, Power, Rocket, RotateCcw, Search, Send, Server, Settings as SettingsIcon, ShieldAlert, Square, SquareTerminal, Star, Sun, Trash2, Upload, WandSparkles, X } from 'lucide-react'
-import { BUNDLED_TERMINAL_FONT, DEFAULT_AI_SETTINGS, DEFAULT_TERMINAL_SETTINGS, type AiCommandHistoryEntry, type AiCommandSuggestion, type AiProvider, type AiRawExchange, type AiRiskAssessment, type AiSettings, type AiSettingsInput, type AiShell, type AiThinkingMode, type AppEvent, type AppIconId, type AppIconSettings, type AppLanguage, type Bookmark, type BookmarkInput, type ConflictResolution, type ConnectInput, type DeploymentDiffEntry, type DeploymentProfile, type HostKeyPrompt, type PortForwardProfile, type SessionStatus, type SshConfigPreview, type TerminalSettings, type TransferTask, type TunnelSummary, type UiTheme } from './types'
+import { ArrowRight, Bookmark as BookmarkIcon, Bot, Check, ChevronDown, ChevronRight, CircleHelp, CirclePlus, Copy, Download, Edit3, ExternalLink, Eye, EyeOff, File, FileInput, FileJson2, Folder, FolderOpen, FolderPlus, GripVertical, History as HistoryIcon, Image as ImageIcon, Info, KeyRound, Languages, Maximize2, Minimize2, Minus, Monitor, Moon, Network, Palette, PanelLeftClose, PanelLeftOpen, Play, Plug, Power, Rocket, Search, Send, Server, Settings as SettingsIcon, ShieldAlert, Square, SquareTerminal, Star, Sun, Trash2, Upload, WandSparkles, X } from 'lucide-react'
+import { BUNDLED_TERMINAL_FONT, DEFAULT_AI_SETTINGS, DEFAULT_TERMINAL_SETTINGS, type AiCommandHistoryEntry, type AiCommandSuggestion, type AiProvider, type AiRawExchange, type AiRiskAssessment, type AiSettings, type AiSettingsInput, type AiShell, type AiThinkingMode, type AppEvent, type AppIconId, type AppIconSettings, type AppLanguage, type Bookmark, type BookmarkInput, type ConflictResolution, type ConnectInput, type DeploymentBundle, type DeploymentPreview, type DeploymentPreviewProgress, type DeploymentProgress, type DeploymentRun, type DeploymentProfile, type DirectoryEntry, type HostKeyPrompt, type PortForwardProfile, type SessionStatus, type SshConfigPreview, type TerminalSettings, type TransferTask, type TunnelSummary, type UiTheme, type WebApiConfig, type WebApiStatus } from './types'
 import { TerminalPane, type TerminalPaneHandle } from './components/TerminalPane'
 import { SftpPane } from './components/SftpPane'
 import { HelpDialog } from './components/HelpDialog'
+import { formatWebApiEndpoint, formatWebApiReference, webApiEndpoints } from './deployment-web-api-reference'
 import { colorWithOpacity, terminalBackgroundStyle } from './terminal-style'
 import { availableLanguages, getNativeMenuLabels, useI18n, type MessageKey } from './i18n'
 
@@ -11,7 +12,7 @@ interface WorkspaceTab { key: string; bookmarkId: string; sessionId?: string; st
 interface ConnectionTarget { newSession?: boolean; tabKey?: string }
 interface SidebarContextMenu { x: number; y: number; group?: string; bookmark?: Bookmark }
 interface GroupDialogState { mode: 'create' | 'rename'; group?: string }
-type SettingsSection = 'appearance' | 'terminal' | 'ai' | 'about'
+type SettingsSection = 'appearance' | 'terminal' | 'ai' | 'webApi' | 'about'
 type SidebarPointerDrag = { pointerId: number; type: 'bookmark' | 'group'; value: string; startX: number; startY: number; active: boolean }
 type SidebarPointerDrop = { type: 'bookmark'; id: string; group: string; position: 'before' | 'after' } | { type: 'group'; group: string; position: 'before' | 'after' | 'inside' }
 type ConfirmationOptions = { title: string; message: string; detail?: string; kind: 'warning' | 'danger'; confirmLabel: string }
@@ -27,6 +28,30 @@ const aiTerminalContextLines = 100
 const aiTerminalContextChars = 16_000
 const repositoryUrl = 'https://github.com/rainj2013/luna-remote'
 const appIconMessageKeys: Record<AppIconId, MessageKey> = { ssh: 'appIcon.ssh', classic: 'appIcon.classic', neon: 'appIcon.neon', light: 'appIcon.light' }
+const deploymentVariables: ReadonlyArray<{ name: string; descriptionKey: MessageKey }> = [
+  { name: 'UPLOAD_DIR', descriptionKey: 'deployment.variable.target' },
+  { name: 'FILE_NAME', descriptionKey: 'deployment.variable.fileName' },
+  { name: 'FILE_PATH', descriptionKey: 'deployment.variable.filePath' },
+]
+const deploymentHookVariables: ReadonlyArray<{ name: string; descriptionKey: MessageKey }> = [
+  { name: 'deploymentName', descriptionKey: 'deployment.hookVariable.deploymentName' },
+  { name: 'finishedAt', descriptionKey: 'deployment.hookVariable.finishedAt' },
+  { name: 'durationSeconds', descriptionKey: 'deployment.hookVariable.durationSeconds' },
+  { name: 'archiveSizeText', descriptionKey: 'deployment.hookVariable.archiveSizeText' },
+  { name: 'selectedFileCount', descriptionKey: 'deployment.hookVariable.selectedFileCount' },
+  { name: 'succeeded', descriptionKey: 'deployment.hookVariable.succeeded' },
+  { name: 'summary', descriptionKey: 'deployment.hookVariable.summary' },
+  { name: 'error', descriptionKey: 'deployment.hookVariable.error' },
+]
+
+function formatFileSize(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`
+  const units = ['KB', 'MB', 'GB', 'TB']
+  let value = bytes
+  let unit = -1
+  do { value /= 1024; unit += 1 } while (value >= 1024 && unit < units.length - 1)
+  return `${new Intl.NumberFormat(undefined, { maximumFractionDigits: value < 10 ? 2 : 1 }).format(value)} ${units[unit]}`
+}
 
 function primaryFontName(fontFamily: string): string {
   return fontFamily.split(',')[0]?.trim().replace(/^["']|["']$/g, '') || 'JetBrains Mono'
@@ -142,6 +167,28 @@ export function App(): React.JSX.Element {
     const preventBrowserMenu = (event: MouseEvent): void => event.preventDefault()
     document.addEventListener('contextmenu', preventBrowserMenu)
     return () => document.removeEventListener('contextmenu', preventBrowserMenu)
+  }, [])
+
+  useEffect(() => {
+    if (window.api.platform !== 'darwin') return
+    document.documentElement.spellcheck = false
+    const disableTextCorrections = (target: EventTarget | null): void => {
+      if (!(target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement || target instanceof HTMLElement && target.isContentEditable)) return
+      target.setAttribute('spellcheck', 'false')
+      target.setAttribute('autocorrect', 'off')
+      target.setAttribute('autocapitalize', 'off')
+    }
+    const onFocus = (event: FocusEvent): void => disableTextCorrections(event.target)
+    const configureTree = (node: Node): void => {
+      disableTextCorrections(node)
+      if (node instanceof Element) node.querySelectorAll('input, textarea, [contenteditable]').forEach(disableTextCorrections)
+    }
+    configureTree(document.body)
+    const observer = new MutationObserver((records) => records.forEach((record) => record.addedNodes.forEach(configureTree)))
+    observer.observe(document.body, { childList: true, subtree: true })
+    disableTextCorrections(document.activeElement)
+    document.addEventListener('focusin', onFocus, true)
+    return () => { observer.disconnect(); document.removeEventListener('focusin', onFocus, true) }
   }, [])
 
   useEffect(() => {
@@ -453,10 +500,10 @@ export function App(): React.JSX.Element {
     catch (error) { showError(errorMessage(error)) }
   }
 
-  const clearCompletedTransfers = async (): Promise<void> => {
+  const clearTransferHistory = async (): Promise<void> => {
     try {
-      await window.api.transfers.clearCompleted()
-      setTransfers((current) => current.filter((item) => !['completed', 'cancelled'].includes(item.status)))
+      const deleted = new Set(await window.api.transfers.clearHistory())
+      setTransfers((current) => current.filter((item) => !deleted.has(item.id)))
     } catch (error) { showError(errorMessage(error)) }
   }
 
@@ -673,7 +720,7 @@ export function App(): React.JSX.Element {
             </div> })}
           </div>
         </>}
-        {tabs.length > 0 && workspaceView === 'files' && <TransferPanel transfers={transfers} view={transferView} setView={setTransferView} onRetry={(task) => void retryTransfer(task)} onCancel={(task) => void cancelTransfer(task)} onClear={() => void clearCompletedTransfers()} />}
+        {tabs.length > 0 && workspaceView === 'files' && <TransferPanel transfers={transfers} view={transferView} setView={setTransferView} onRetry={(task) => void retryTransfer(task)} onCancel={(task) => void cancelTransfer(task)} onClear={() => void clearTransferHistory()} />}
       </main>
     </div>
     {sidebarContextMenu && <div className="sidebar-context-menu" role="menu" style={{ left: sidebarContextMenu.x, top: sidebarContextMenu.y }} onPointerDown={(event) => event.stopPropagation()}>
@@ -699,10 +746,10 @@ export function App(): React.JSX.Element {
     {authRequest && <AuthDialog bookmark={authRequest.bookmark} jumpBookmark={authRequest.bookmark.jumpBookmarkId ? bookmarkMap.get(authRequest.bookmark.jumpBookmarkId) : undefined} onClose={() => setAuthRequest(null)} onConnect={(credentials) => void connect(authRequest.bookmark, credentials, authRequest.target)} />}
     {hostPrompts[0] && <HostKeyDialog prompt={hostPrompts[0]} onDecision={(accept) => { const prompt = hostPrompts[0]; if (!prompt) return; window.api.sessions.hostKeyDecision(prompt.sessionId, accept); setHostPrompts((current) => current.filter((item) => item !== prompt)) }} />}
     {conflict && <ConflictDialog conflict={conflict} onDecision={(resolution, apply) => { window.api.transfers.resolveConflict(conflict.taskId, resolution, apply); setConflict(null) }} />}
-    {settingsDialog && <SettingsDialog initialSection={settingsInitialSection} settings={terminalSettings} backgroundImage={terminalBackground} appIcons={appIcons} uiTheme={uiTheme} appLanguage={savedLanguage} aiSettings={aiSettings} onAiSettingsChange={setAiSettings} onThemePreview={setUiThemePreview} onLanguagePreview={setLanguage} onClose={() => { setUiThemePreview(null); setLanguage(savedLanguage); setSettingsDialog(false) }} onSave={(settings, image, icon, theme, appLanguage, ai) => void saveSettings(settings, image, icon, theme, appLanguage, ai)} onConfirm={confirmAction} onNotice={(message) => showToast(message, 'success')} onError={showError} />}
+    {settingsDialog && <SettingsDialog initialSection={settingsInitialSection} settings={terminalSettings} backgroundImage={terminalBackground} appIcons={appIcons} uiTheme={uiTheme} appLanguage={savedLanguage} aiSettings={aiSettings} onAiSettingsChange={setAiSettings} onThemePreview={setUiThemePreview} onLanguagePreview={setLanguage} onClose={() => { setUiThemePreview(null); setLanguage(savedLanguage); setSettingsDialog(false) }} onSave={(settings, image, icon, theme, appLanguage, ai) => void saveSettings(settings, image, icon, theme, appLanguage, ai)} onConfirm={confirmAction} onNotice={(message) => showToast(message, 'success')} onError={showError} raised={deploymentDialog} />}
     {aiDialog && activeBookmark && activeTab && <AiCommandDialog bookmark={activeBookmark} sessionId={activeTab.sessionId} connected={activeTab.status === 'connected'} settings={aiSettings} getTerminalContext={() => terminalPaneRefs.current.get(activeTab.key)?.getRecentLines(aiTerminalContextLines, aiTerminalContextChars) ?? ''} onSettingsChange={setAiSettings} onSettings={() => { setAiDialog(false); openSettings('ai') }} onClose={() => setAiDialog(false)} onError={showError} />}
     {helpDialog && <HelpDialog onClose={() => setHelpDialog(false)} />}
-    {deploymentDialog && activeBookmark && activeTab?.sessionId && <DeploymentDialog bookmark={activeBookmark} sessionId={activeTab.sessionId} onClose={() => setDeploymentDialog(false)} onConfirm={confirmAction} onError={showError} />}
+    {deploymentDialog && activeBookmark && activeTab?.sessionId && <DeploymentDialog bookmark={activeBookmark} sessionId={activeTab.sessionId} aiSettings={aiSettings} onOpenAiSettings={() => openSettings('ai')} onClose={() => setDeploymentDialog(false)} onConfirm={confirmAction} onNotice={(message) => showToast(message, 'success')} onError={showError} />}
     {tunnelDialog && activeBookmark && activeTab?.sessionId && <TunnelDialog bookmark={activeBookmark} sessionId={activeTab.sessionId} onClose={() => setTunnelDialog(false)} onError={showError} />}
     {importPreview && <SshConfigImportDialog preview={importPreview} onClose={() => setImportPreview(null)} onImported={async () => { setImportPreview(null); await reloadSidebarData() }} onError={showError} />}
     {confirmation && <ConfirmationDialog confirmation={confirmation} onDecision={resolveConfirmation} />}
@@ -985,47 +1032,541 @@ function TunnelDialog({ bookmark, sessionId, onClose, onError }: { bookmark: Boo
   </div></Modal>
 }
 
-function DeploymentDialog({ bookmark, sessionId, onClose, onConfirm, onError }: { bookmark: Bookmark; sessionId: string; onClose(): void; onConfirm: ConfirmAction; onError(message: string): void }): React.JSX.Element {
+interface DeploymentPreviewNode {
+  name: string
+  path: string
+  file?: DeploymentPreview['files'][number]
+  children: Map<string, DeploymentPreviewNode>
+}
+
+function DeploymentPreviewBranch({ node }: { node: DeploymentPreviewNode }): React.JSX.Element {
+  const [expanded, setExpanded] = useState(true)
+  const children = [...node.children.values()].sort((a, b) => Number(b.children.size > 0) - Number(a.children.size > 0) || a.name.localeCompare(b.name))
+  if (children.length === 0) return <li><div className="deployment-preview-tree-row" title={node.path}><span className="deployment-preview-chevron-spacer" /><File size={15} /><span>{node.name}</span><small title={`${(node.file?.size ?? 0).toLocaleString()} B`}>{formatFileSize(node.file?.size ?? 0)}</small></div></li>
+  return <li><button type="button" className="deployment-preview-tree-row deployment-preview-folder" onClick={() => setExpanded((value) => !value)} aria-expanded={expanded}>{expanded ? <ChevronDown size={15} /> : <ChevronRight size={15} />}<Folder size={15} /><span>{node.name}</span></button>{expanded && <ul>{children.map((child) => <DeploymentPreviewBranch key={child.path} node={child} />)}</ul>}</li>
+}
+
+function DeploymentPreviewTree({ files, root, archive }: { files: DeploymentPreview['files']; root: string; archive: boolean }): React.JSX.Element {
+  const nodes = useMemo(() => {
+    const roots = new Map<string, DeploymentPreviewNode>()
+    for (const file of files) {
+      let siblings = roots
+      let path = ''
+      for (const part of file.relativePath.split('/')) {
+        path = path ? `${path}/${part}` : part
+        let node = siblings.get(part)
+        if (!node) {
+          node = { name: part, path, children: new Map() }
+          siblings.set(part, node)
+        }
+        if (path === file.relativePath) node.file = file
+        siblings = node.children
+      }
+    }
+    return [...roots.values()].sort((a, b) => Number(b.children.size > 0) - Number(a.children.size > 0) || a.name.localeCompare(b.name))
+  }, [files])
+  return <div className="deployment-preview-tree"><div className="deployment-preview-tree-root">{archive ? <File size={16} /> : <FolderOpen size={16} />}<strong title={root}>{root}</strong>{archive && <small>{root.endsWith('.tar.gz') ? 'tar.gz' : 'ZIP'}</small>}</div><ul>{nodes.map((node) => <DeploymentPreviewBranch key={node.path} node={node} />)}</ul></div>
+}
+
+function DeploymentAiComposer({ archiveEnabled, archiveFormat, hasCommand, settings, onUse, onSettings, onClose }: { archiveEnabled: boolean; archiveFormat: DeploymentProfile['archiveFormat']; hasCommand: boolean; settings: AiSettings; onUse(command: string): void; onSettings(): void; onClose(): void }): React.JSX.Element {
   const { t } = useI18n()
-  const empty = (): DeploymentProfile => ({ id: crypto.randomUUID(), bookmarkId: bookmark.id, name: '', localDirectory: '', remoteDirectory: '/', deleteExtraneous: false })
-  const [profiles, setProfiles] = useState<DeploymentProfile[]>([])
-  const [profile, setProfile] = useState<DeploymentProfile>(empty)
-  const [diff, setDiff] = useState<DeploymentDiffEntry[] | null>(null)
+  const [requirement, setRequirement] = useState('')
+  const [suggestion, setSuggestion] = useState<AiCommandSuggestion | null>(null)
+  const [draftCommand, setDraftCommand] = useState('')
   const [loading, setLoading] = useState(false)
-  useEffect(() => { void window.api.deployments.list(bookmark.id).then((items) => { setProfiles(items); if (items[0]) setProfile(items[0]) }).catch((error) => onError(errorMessage(error))) }, [bookmark.id])
-  const set = <K extends keyof DeploymentProfile>(key: K, value: DeploymentProfile[K]): void => { setProfile((current) => ({ ...current, [key]: value })); setDiff(null) }
-  const save = async (): Promise<DeploymentProfile | undefined> => {
-    try {
-      const saved = await window.api.deployments.save(profile)
-      setProfile(saved); setProfiles((current) => [saved, ...current.filter((item) => item.id !== saved.id)])
-      return saved
-    } catch (error) { onError(errorMessage(error)); return undefined }
-  }
-  const preview = async (): Promise<void> => {
-    const saved = await save(); if (!saved) return
-    setLoading(true)
-    try { setDiff(await window.api.deployments.preview(saved.id, sessionId)) }
-    catch (error) { onError(errorMessage(error)) }
+  const [error, setError] = useState('')
+  const variableContext = deploymentVariables.map((variable) => variable.name + ': ' + t(variable.descriptionKey)).join('\n')
+  const generate = async (): Promise<void> => {
+    if (!requirement.trim()) return
+    const context = [
+      'Generate a readable Bash script for a deployment Shell template. Put separate steps on separate lines and indent control blocks. It runs remotely after the upload, inside bash -lc. Do not include another bash -lc wrapper.',
+      'The SSH execution channel allocates a PTY but does not provide interactive password input. If sudo is needed, use sudo -n so a password requirement fails immediately. For a privileged Bash-specific command or redirection, put the whole privileged operation inside sudo -n bash -lc, and do not assume sudo preserves deployment environment variables.',
+      'The following deployment variables are available as environment variables. Their descriptions are part of the deployment UI and apply to this command:',
+      variableContext,
+      'UPLOAD_DIR is only the remote upload directory. The final deployment directory may be elsewhere after the script extracts or copies the uploaded files. Do not treat UPLOAD_DIR as the final deployment directory unless the user explicitly says so.',
+      'Reference variables as unquoted template placeholders, for example {{UPLOAD_DIR}} and {{FILE_PATH}}. The app converts each placeholder to a safely quoted Shell expansion at execution time. Do not wrap placeholders in additional quotes.',
+      archiveEnabled ? `Upload mode: one ${archiveFormat === 'tarGz' ? 'tar.gz' : 'ZIP'} file. FILE_NAME and FILE_PATH refer to that archive. Its name is the workspace root directory followed by _yyyyMMddHHmmss and the format extension.` : 'Upload mode: individual files. When multiple files are selected, FILE_NAME and FILE_PATH are empty.',
+      'Do not assume any concrete remote path. Generate the command only; do not execute it.',
+      'User request: ' + requirement.trim(),
+    ].join('\n')
+    setLoading(true); setError(''); setSuggestion(null); setDraftCommand('')
+    try { const next = await window.api.ai.generate(context, 'linux', undefined, false, true); setSuggestion(next); setDraftCommand(next.command) }
+    catch (generateError) { setError(errorMessage(generateError)) }
     finally { setLoading(false) }
   }
-  const execute = async (): Promise<void> => {
-    if (!diff) return
-    const changed = diff.filter((item) => ['new', 'changed'].includes(item.status)).length
-    const removals = profile.deleteExtraneous ? diff.filter((item) => item.status === 'remote-only').length : 0
-    if (!await onConfirm({ title: t('app.confirmDeployment'), message: removals ? t('app.deployUploadAndDelete', { changed, removals }) : t('app.deployUploadOnly', { changed }), detail: removals ? t('app.remoteFilesAreDeletedOnlyAfterEveryUpload') : t('app.verifyTheDeploymentTargetAndDifferences'), kind: 'warning', confirmLabel: t('common.startDeployment') })) return
-    try { await window.api.deployments.execute(profile.id, sessionId); onClose() }
-    catch (error) { onError(errorMessage(error)) }
-  }
-  const counts = diff ? Object.fromEntries(['new', 'changed', 'same', 'remote-only'].map((status) => [status, diff.filter((item) => item.status === status).length])) : {}
-  return <Modal title={t('app.deployToValue', { value0: bookmark.name })} onClose={onClose} wide><div className="deployment-dialog">
-    <div className="deployment-profile-bar"><select value={profile.id} onChange={(event) => { const selected = profiles.find((item) => item.id === event.target.value); if (selected) { setProfile(selected); setDiff(null) } }}><option value={profile.id}>{profiles.some((item) => item.id === profile.id) ? profile.name || t('common.unnamedProfile') : t('app.newDeploymentProfile')}</option>{profiles.filter((item) => item.id !== profile.id).map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select><button className="secondary-button" onClick={() => { setProfile(empty()); setDiff(null) }}><CirclePlus size={15} />{t('common.new')}</button>{profiles.some((item) => item.id === profile.id) && <button className="icon-button danger" title={t('app.deleteDeploymentProfile')} onClick={async () => { await window.api.deployments.remove(profile.id); const next = profiles.filter((item) => item.id !== profile.id); setProfiles(next); setProfile(next[0] ?? empty()); setDiff(null) }}><Trash2 size={15} /></button>}</div>
-    <div className="form-grid"><label>{t('app.profileName')}<input value={profile.name} onChange={(event) => set('name', event.target.value)} /></label><label>{t('app.localDirectory')}<div className="input-button"><input readOnly value={profile.localDirectory} /><button className="secondary-button" onClick={async () => { const path = await window.api.files.chooseLocalDirectory(); if (path) set('localDirectory', path) }}>{t('common.choose')}</button></div></label><label>{t('app.remoteDirectory')}<input value={profile.remoteDirectory} onChange={(event) => set('remoteDirectory', event.target.value)} /></label><label className="check-label"><input type="checkbox" checked={profile.deleteExtraneous} onChange={(event) => set('deleteExtraneous', event.target.checked)} />{t('app.deleteExtraRemoteFilesAfterAllUploadsSucceed')}</label></div>
-    {diff && <><div className="deployment-summary"><span>{t('common.new2')} {counts['new'] ?? 0}</span><span>{t('app.changed')} {counts['changed'] ?? 0}</span><span>{t('common.same')} {counts['same'] ?? 0}</span><span>{t('app.remoteOnly')} {counts['remote-only'] ?? 0}</span></div><div className="deployment-diff">{diff.filter((item) => item.status !== 'same').slice(0, 300).map((item) => <div key={`${item.status}:${item.relativePath}`}><span className={item.status}>{({ new: t('common.new2'), changed: t('app.update'), 'remote-only': t('common.remote'), same: t('common.same') } as const)[item.status]}</span><code>{item.relativePath}</code></div>)}</div></>}
-    <div className="dialog-actions"><button className="secondary-button" onClick={onClose}>{t('common.cancel')}</button><button className="secondary-button" disabled={loading} onClick={() => void preview()}>{loading ? t('app.comparing') : t('app.saveAndPreview')}</button><button className="primary-button" disabled={!diff || loading} onClick={() => void execute()}><Rocket size={15} />{t('common.startDeployment')}</button></div>
+  const riskText = suggestion ? ({ low: t('common.lowRisk'), medium: t('common.caution'), high: t('common.highRisk') } as const)[suggestion.riskLevel] : ''
+  return <Modal title={t('deployment.aiAssist')} onClose={onClose} wide raised className="deployment-ai-modal"><div className="deployment-ai-dialog">
+    <div className="deployment-ai-content">
+      {!settings.model.trim() ? <div className="deployment-ai-unconfigured"><span>{t('app.noAiModelConfigured')}</span><button type="button" className="secondary-button" onClick={onSettings}><SettingsIcon size={15} />{t('app.openAiSettings')}</button></div> : <>
+        <label className="deployment-ai-prompt">{t('deployment.aiPrompt')}<textarea autoFocus rows={3} maxLength={1800} value={requirement} placeholder={t('deployment.aiPlaceholder')} onChange={(event) => setRequirement(event.target.value)} onKeyDown={(event) => { if ((event.ctrlKey || event.metaKey) && event.key === 'Enter') { event.preventDefault(); void generate() } }} /></label>
+        <div className="deployment-ai-actions"><span>{t('deployment.aiHint')}</span><button type="button" className="primary-button" disabled={loading || !requirement.trim()} onClick={() => void generate()}><WandSparkles size={15} />{loading ? t('app.generating') : t('app.generateCommand')}</button></div>
+        {error && <div className="ai-error" role="alert">{error}</div>}
+        {suggestion && <div className="deployment-ai-result"><div className="ai-result-heading"><div><strong>{t('app.generatedResult')}</strong><span className={'ai-risk ' + suggestion.riskLevel}>{riskText}</span></div></div><label>{t('deployment.aiEditResult')}<textarea rows={9} value={draftCommand} onChange={(event) => setDraftCommand(event.target.value)} spellCheck={false} /></label>{suggestion.explanation && <p>{suggestion.explanation}</p>}{suggestion.assumptions.length > 0 && <details className="ai-notes"><summary>{t('app.assumptions')} <span>{suggestion.assumptions.length}</span></summary><ul>{suggestion.assumptions.map((item) => <li key={item}>{item}</li>)}</ul></details>}{suggestion.warnings.length > 0 && <details className="ai-notes warning"><summary>{t('app.warnings')} <span>{suggestion.warnings.length}</span></summary><ul>{suggestion.warnings.map((item) => <li key={item}>{item}</li>)}</ul></details>}</div>}
+        <details className="deployment-preview-details deployment-ai-context"><summary>{t('deployment.aiContext')}</summary><pre className="deployment-code">{variableContext}</pre></details>
+      </>}
+    </div>
+    <div className="deployment-ai-footer"><button type="button" className="secondary-button" onClick={onClose}>{t('common.cancel')}</button><button type="button" className="primary-button" disabled={!suggestion || !draftCommand.trim()} onClick={() => onUse(draftCommand)}>{hasCommand ? t('deployment.aiReplace') : t('deployment.aiUse')}</button></div>
   </div></Modal>
 }
 
-function SettingsDialog({ initialSection, settings, backgroundImage, appIcons, uiTheme, appLanguage, aiSettings, onAiSettingsChange, onThemePreview, onLanguagePreview, onClose, onSave, onConfirm, onNotice, onError }: { initialSection: SettingsSection; settings: TerminalSettings; backgroundImage: string; appIcons: AppIconSettings; uiTheme: UiTheme; appLanguage: AppLanguage; aiSettings: AiSettings; onAiSettingsChange(settings: AiSettings): void; onThemePreview(theme: UiTheme): void; onLanguagePreview(language: AppLanguage): void; onClose(): void; onSave(settings: TerminalSettings, backgroundImage: string, appIcon: AppIconId, uiTheme: UiTheme, appLanguage: AppLanguage, ai: AiSettingsInput): void; onConfirm: ConfirmAction; onNotice(message: string): void; onError(message: string): void }): React.JSX.Element {
+function DeploymentImportDialog({ bundle, target, onClose, onImported, onError }: { bundle: DeploymentBundle; target: Bookmark; onClose(): void; onImported(items: DeploymentProfile[]): void; onError(message: string): void }): React.JSX.Element {
+  const { t } = useI18n()
+  const [tasks, setTasks] = useState(bundle.tasks.map((task) => ({ ...task })))
+  const [selected, setSelected] = useState(new Set(bundle.tasks.map((_, index) => index)))
+  const [loading, setLoading] = useState(false)
+  const [error, setError] = useState('')
+  const chooseWorkspace = async (index: number): Promise<void> => {
+    try { const path = await window.api.files.chooseLocalDirectory(); if (path) setTasks((current) => current.map((task, position) => position === index ? { ...task, workspace: path } : task)) }
+    catch (chooseError) { onError(errorMessage(chooseError)) }
+  }
+  const importTasks = async (): Promise<void> => {
+    setLoading(true); setError('')
+    try { onImported(await window.api.deployments.importBundle(target.id, tasks.filter((_, index) => selected.has(index)))) }
+    catch (importError) { setError(errorMessage(importError)) }
+    finally { setLoading(false) }
+  }
+  const canImport = selected.size > 0 && tasks.every((task, index) => !selected.has(index) || Boolean(task.workspace.trim()))
+  return <Modal title={t('deployment.importTasks')} onClose={onClose} wide raised className="deployment-import-modal"><div className="deployment-import-dialog">
+    <p className="deployment-import-hint">{t('deployment.importSource', { source: bundle.sourceConnection, target: target.name })}<br />{t('deployment.importHint')}</p>
+    <div className="deployment-import-list">{tasks.map((task, index) => <div className="deployment-import-row" key={index}>
+      <label className="check-label"><input type="checkbox" checked={selected.has(index)} onChange={(event) => setSelected((current) => { const next = new Set(current); if (event.target.checked) next.add(index); else next.delete(index); return next })} /><strong>{task.name}</strong>{task.schedule.enabled && <small>{t('deployment.schedule')} · {task.schedule.dailyTime}</small>}</label>
+      <small title={task.workspace}>{t('deployment.originalWorkspace')}: {task.workspace}</small>
+      <label>{t('deployment.targetWorkspace')}<div className="input-button"><input value={task.workspace} disabled={!selected.has(index)} onChange={(event) => setTasks((current) => current.map((item, position) => position === index ? { ...item, workspace: event.target.value } : item))} /><button type="button" className="secondary-button" disabled={!selected.has(index)} onClick={() => void chooseWorkspace(index)}>{t('common.choose')}</button></div></label>
+    </div>)}</div>
+    {error && <p className="deployment-result-error" role="alert">{error}</p>}
+    <div className="dialog-actions"><button type="button" className="secondary-button" onClick={onClose}>{t('common.cancel')}</button><button type="button" className="primary-button" disabled={!canImport || loading} onClick={() => void importTasks()}>{loading ? t('app.importing') : t('deployment.importSelected', { count: selected.size })}</button></div>
+  </div></Modal>
+}
+
+function DeploymentDialog({ bookmark, sessionId, aiSettings, onOpenAiSettings, onClose, onConfirm, onNotice, onError }: { bookmark: Bookmark; sessionId: string; aiSettings: AiSettings; onOpenAiSettings(): void; onClose(): void; onConfirm: ConfirmAction; onNotice(message: string): void; onError(message: string): void }): React.JSX.Element {
+  const { t } = useI18n()
+  const shellEditorRef = useRef<HTMLTextAreaElement>(null)
+  const hookEditorRef = useRef<HTMLTextAreaElement>(null)
+  const shellSelectionRef = useRef({ start: 0, end: 0 })
+  const editorFocusPendingRef = useRef(false)
+  const previewRef = useRef<HTMLElement>(null)
+  const resultRef = useRef<HTMLElement>(null)
+  const historyResultRef = useRef<HTMLElement>(null)
+  const nameRef = useRef<HTMLInputElement>(null)
+  const workspaceButtonRef = useRef<HTMLButtonElement>(null)
+  const rootSelectionRef = useRef<HTMLInputElement>(null)
+  const remoteDirectoryRef = useRef<HTMLInputElement>(null)
+  const scheduleTimeRef = useRef<HTMLInputElement>(null)
+  const scheduleDetailsRef = useRef<HTMLDetailsElement>(null)
+  const hookUrlRef = useRef<HTMLInputElement>(null)
+  const hookDetailsRef = useRef<HTMLDetailsElement>(null)
+  const previewRequestIdRef = useRef<string | null>(null)
+  const withHookDefaults = (item: DeploymentProfile): DeploymentProfile => { let legacyTemplate: DeploymentProfile['hookTemplate'] = 'custom'; try { if (['open.feishu.cn', 'open.larksuite.com'].includes(new URL(item.hookUrl).hostname) && !item.hookBody?.trim()) legacyTemplate = 'feishu' } catch { /* Empty or older URL; keep the generic template. */ } return { ...item, hookUrl: item.hookUrl ?? '', hookTemplate: item.hookTemplate ?? legacyTemplate, hookBody: item.hookBody ?? '' } }
+  const empty = (): DeploymentProfile => ({ id: crypto.randomUUID(), bookmarkId: bookmark.id, name: '', workspace: '', selection: { included: [], excluded: [] }, remoteDirectory: '/', archiveEnabled: true, archiveFormat: 'zip', shellTemplate: '', shell: 'bash', confirmManual: true, schedule: { enabled: false, dailyTime: '09:00' }, hookUrl: '', hookTemplate: 'custom', hookBody: '' })
+  const [profiles, setProfiles] = useState<DeploymentProfile[]>([])
+  const [profile, setProfile] = useState<DeploymentProfile>(empty)
+  const savedProfileRef = useRef(profile)
+  const profileTouchedRef = useRef(false)
+  const [view, setView] = useState<'deploy' | 'preview' | 'run' | 'history'>('deploy')
+  const [validationAction, setValidationAction] = useState<'save' | 'deploy' | null>(null)
+  const [tree, setTree] = useState<Record<string, DirectoryEntry[]>>({})
+  const [expanded, setExpanded] = useState<Set<string>>(new Set())
+  const [previewData, setPreviewData] = useState<DeploymentPreview | null>(null)
+  const [previewProgress, setPreviewProgress] = useState<DeploymentPreviewProgress | null>(null)
+  const [deploymentProgress, setDeploymentProgress] = useState<DeploymentProgress | null>(null)
+  const deploymentRequestIdRef = useRef<string | null>(null)
+  const [runs, setRuns] = useState<DeploymentRun[]>([])
+  const [run, setRun] = useState<DeploymentRun | null>(null)
+  const [viewRunId, setViewRunId] = useState<string | null>(null)
+  const [historyRun, setHistoryRun] = useState<DeploymentRun | null>(null)
+  const [selectedRuns, setSelectedRuns] = useState<Set<string>>(new Set())
+  const [aiComposerOpen, setAiComposerOpen] = useState(false)
+  const [importBundle, setImportBundle] = useState<DeploymentBundle | null>(null)
+  const [editorExpanded, setEditorExpanded] = useState(false)
+  const [busy, setBusy] = useState(false)
+  useEffect(() => {
+    if (!editorFocusPendingRef.current) return
+    const frame = window.requestAnimationFrame(() => {
+      editorFocusPendingRef.current = false
+      const editor = shellEditorRef.current
+      if (!editor) return
+      editor.focus()
+      editor.setSelectionRange(shellSelectionRef.current.start, shellSelectionRef.current.end)
+    })
+    return () => window.cancelAnimationFrame(frame)
+  }, [editorExpanded])
+  useEffect(() => { void window.api.deployments.list(bookmark.id).then((items) => { setProfiles(items); if (items[0] && !profileTouchedRef.current) { const selected = withHookDefaults(items[0]); savedProfileRef.current = selected; setProfile(selected) } }).catch((error) => onError(errorMessage(error))) }, [bookmark.id])
+  useEffect(() => window.api.onEvent((event) => {
+    if (event.type === 'deployment-preview-progress' && event.payload.requestId === previewRequestIdRef.current) setPreviewProgress(event.payload)
+    if (event.type === 'deployment-progress' && event.payload.requestId === deploymentRequestIdRef.current) setDeploymentProgress(event.payload)
+  }), [])
+  useEffect(() => {
+    setTree({}); setExpanded(new Set())
+    if (profile.workspace) void window.api.deployments.tree(profile.workspace, '.').then((items) => setTree({ '.': items })).catch((error) => onError(errorMessage(error)))
+  }, [profile.workspace])
+  useEffect(() => {
+    if (!profiles.some((item) => item.id === profile.id)) { setRuns([]); return }
+    const load = (): void => { void window.api.deployments.runsList(profile.id).then(setRuns).catch((error) => onError(errorMessage(error))) }
+    load(); const timer = window.setInterval(load, 1500)
+    return () => window.clearInterval(timer)
+  }, [profile.id, profiles.length])
+  const set = <K extends keyof DeploymentProfile>(key: K, value: DeploymentProfile[K]): void => { profileTouchedRef.current = true; setProfile((current) => ({ ...current, [key]: value })); setPreviewData(null) }
+  const toggleEditorExpanded = (): void => {
+    const editor = shellEditorRef.current
+    if (editor) shellSelectionRef.current = { start: editor.selectionStart, end: editor.selectionEnd }
+    editorFocusPendingRef.current = true
+    setEditorExpanded((current) => !current)
+  }
+  const closeAiComposer = (): void => {
+    setAiComposerOpen(false)
+    window.requestAnimationFrame(() => shellEditorRef.current?.focus())
+  }
+  const insertShellVariable = (name: string): void => {
+    const editor = shellEditorRef.current
+    const start = editor?.selectionStart ?? profile.shellTemplate.length
+    const end = editor?.selectionEnd ?? start
+    const before = profile.shellTemplate[start - 1]
+    const after = profile.shellTemplate[end]
+    const leadingSpace = before && !/\s/.test(before) && !'=([{;|&'.includes(before) ? ' ' : ''
+    const trailingSpace = after && !/\s/.test(after) && !')]}:;,|&'.includes(after) ? ' ' : ''
+    const insertion = leadingSpace + '{{' + name + '}}' + trailingSpace
+    set('shellTemplate', profile.shellTemplate.slice(0, start) + insertion + profile.shellTemplate.slice(end))
+    window.requestAnimationFrame(() => {
+      shellEditorRef.current?.focus()
+      shellEditorRef.current?.setSelectionRange(start + insertion.length, start + insertion.length)
+    })
+  }
+  const insertHookVariable = (name: string): void => {
+    const editor = hookEditorRef.current
+    const start = editor?.selectionStart ?? profile.hookBody.length
+    const end = editor?.selectionEnd ?? start
+    const insertion = `{{${name}}}`
+    set('hookBody', profile.hookBody.slice(0, start) + insertion + profile.hookBody.slice(end))
+    window.requestAnimationFrame(() => {
+      hookEditorRef.current?.focus()
+      hookEditorRef.current?.setSelectionRange(start + insertion.length, start + insertion.length)
+    })
+  }
+  type DeploymentField = 'name' | 'workspace' | 'selection' | 'remoteDirectory' | 'schedule' | 'hookUrl' | 'hookBody'
+  const validationIssues = (action: 'save' | 'deploy'): { field: DeploymentField; message: string }[] => {
+    const issues: { field: DeploymentField; message: string }[] = []
+    if (!profile.name.trim()) issues.push({ field: 'name', message: t('deployment.validation.name') })
+    if (!profile.workspace.trim() || !(/^(?:[a-zA-Z]:[\\/]|\\\\|\/)/.test(profile.workspace.trim()))) issues.push({ field: 'workspace', message: t('deployment.validation.workspace') })
+    if ((action === 'deploy' || profile.schedule.enabled) && profile.selection.included.length === 0) issues.push({ field: 'selection', message: t(profile.schedule.enabled ? 'deployment.validation.scheduleSelection' : 'deployment.validation.selection') })
+    const remote = profile.remoteDirectory.trim()
+    if (!remote.startsWith('/') || /[\0\n]/.test(remote) || remote.split('/').some((part) => part === '.' || part === '..')) issues.push({ field: 'remoteDirectory', message: t('deployment.validation.remoteDirectory') })
+    if (profile.schedule.enabled && !/^(?:[01]\d|2[0-3]):[0-5]\d$/.test(profile.schedule.dailyTime)) issues.push({ field: 'schedule', message: t('deployment.validation.scheduleTime') })
+    if (profile.hookUrl.trim()) {
+      try {
+        const url = new URL(profile.hookUrl.trim())
+        if (!['http:', 'https:'].includes(url.protocol) || !url.hostname) throw new Error('Invalid URL')
+      } catch { issues.push({ field: 'hookUrl', message: t('deployment.validation.hookUrl') }) }
+      if (profile.hookTemplate === 'custom' && profile.hookBody.trim()) {
+        const allowedVariables = new Set(['summary', 'runId', 'deploymentId', 'deploymentName', 'taskName', 'bookmarkId', 'triggerType', 'status', 'succeeded', 'startedAt', 'finishedAt', 'durationSeconds', 'selectedFileCount', 'archiveSize', 'archiveSizeText', 'uploadDirectory', 'commandExitCode', 'error'])
+        const unknown = [...profile.hookBody.matchAll(/{{([^{}]+)}}/g)].map((match) => (match[1] ?? '').trim().replace(/^json\./, '')).find((name) => !allowedVariables.has(name))
+        if (unknown) issues.push({ field: 'hookBody', message: t('deployment.validation.hookVariable', { name: unknown }) })
+        else {
+          try { JSON.parse(profile.hookBody.replace(/{{[^{}]+}}/g, 'null')) }
+          catch { issues.push({ field: 'hookBody', message: t('deployment.validation.hookBody') }) }
+        }
+      }
+    }
+    return issues
+  }
+  const focusIssue = (field: DeploymentField): void => {
+    if (field === 'schedule' && scheduleDetailsRef.current) scheduleDetailsRef.current.open = true
+    if ((field === 'hookUrl' || field === 'hookBody') && hookDetailsRef.current) hookDetailsRef.current.open = true
+    window.requestAnimationFrame(() => {
+      const target = ({ name: nameRef, workspace: workspaceButtonRef, selection: rootSelectionRef, remoteDirectory: remoteDirectoryRef, schedule: scheduleTimeRef, hookUrl: hookUrlRef, hookBody: hookEditorRef } as const)[field].current
+      target?.scrollIntoView({ behavior: 'smooth', block: 'center' })
+      target?.focus()
+    })
+  }
+  const validateAction = (action: 'save' | 'deploy'): boolean => {
+    setValidationAction(action)
+    const first = validationIssues(action)[0]
+    if (first) { focusIssue(first.field); return false }
+    return true
+  }
+  const hasUnsavedChanges = (): boolean => JSON.stringify(profile) !== JSON.stringify(savedProfileRef.current)
+  const discardChanges = async (): Promise<boolean> => !hasUnsavedChanges() || await onConfirm({ title: t('deployment.unsavedTitle'), message: t('deployment.unsavedMessage'), kind: 'warning', confirmLabel: t('deployment.discardChanges') })
+  const requestClose = async (): Promise<void> => { if (await discardChanges()) onClose() }
+  const save = async (confirmLabel = t('deployment.save')): Promise<DeploymentProfile | undefined> => {
+    const previous = profiles.find((item) => item.id === profile.id)
+    if (profile.schedule.enabled && (!previous || JSON.stringify(previous) !== JSON.stringify(profile))) {
+      const accepted = await onConfirm({ title: t('deployment.schedule'), message: t('deployment.scheduleRisk'), kind: 'warning', confirmLabel })
+      if (!accepted) return undefined
+    }
+    try {
+      const saved = await window.api.deployments.save(profile)
+      savedProfileRef.current = saved
+      setProfile(saved); setProfiles((current) => [saved, ...current.filter((item) => item.id !== saved.id)])
+      setValidationAction(null)
+      if (JSON.stringify(saved) !== JSON.stringify(profile)) setPreviewData(null)
+      return saved
+    } catch (error) { onError(errorMessage(error)); return undefined }
+  }
+  const saveTask = async (): Promise<void> => {
+    if (!validateAction('save')) return
+    setBusy(true)
+    try { if (await save()) onNotice(t('deployment.savedTask')) }
+    finally { setBusy(false) }
+  }
+  const loadTree = async (relative: string): Promise<void> => {
+    if (tree[relative]) return
+    try { const items = await window.api.deployments.tree(profile.workspace, relative); setTree((current) => ({ ...current, [relative]: items })) }
+    catch (error) { onError(errorMessage(error)) }
+  }
+  const toggleFolder = (relative: string): void => {
+    setExpanded((current) => { const next = new Set(current); if (next.has(relative)) next.delete(relative); else next.add(relative); return next })
+    void loadTree(relative)
+  }
+  const covered = (relative: string, rules: string[]): boolean => rules.some((rule) => rule === '.' || relative === rule || relative.startsWith(`${rule}/`))
+  const selectionState = (relative: string, kind: DirectoryEntry['kind']): { checked: boolean; mixed: boolean } => {
+    const excluded = covered(relative, profile.selection.excluded)
+    const checked = !excluded && covered(relative, profile.selection.included)
+    const mixed = kind === 'directory' && (checked && profile.selection.excluded.some((rule) => rule.startsWith(`${relative}/`)) || !checked && profile.selection.included.some((rule) => rule.startsWith(`${relative}/`)))
+    return { checked, mixed }
+  }
+  const select = (relative: string, checked: boolean): void => {
+    profileTouchedRef.current = true
+    setProfile((current) => {
+      let included = current.selection.included.filter((rule) => relative === '.' ? false : rule !== relative && !rule.startsWith(`${relative}/`))
+      let excluded = current.selection.excluded.filter((rule) => relative === '.' ? false : rule !== relative && !rule.startsWith(`${relative}/`))
+      if (checked) { excluded = excluded.filter((rule) => rule !== '.' && !(relative === rule || relative.startsWith(`${rule}/`))); included = [...included, relative] }
+      else if (covered(relative, current.selection.included)) excluded = [...excluded, relative]
+      return { ...current, selection: { included, excluded } }
+    })
+    setPreviewData(null)
+  }
+  const renderNodes = (parent: string): React.ReactNode => (tree[parent] ?? []).map((item) => {
+    const relative = parent === '.' ? item.name : `${parent}/${item.name}`
+    const folder = item.kind === 'directory'
+    const state = selectionState(relative, item.kind)
+    return <li className="deployment-tree-node" key={relative}><div className="deployment-tree-row">
+      {folder ? <button type="button" className="icon-button" title={expanded.has(relative) ? t('deployment.collapse') : t('deployment.expand')} aria-expanded={expanded.has(relative)} onClick={() => toggleFolder(relative)}>{expanded.has(relative) ? <ChevronDown size={14} /> : <ChevronRight size={14} />}</button> : <span className="deployment-tree-spacer" />}
+      <input type="checkbox" aria-label={relative} disabled={item.kind === 'symlink' || item.kind === 'other'} checked={state.checked} ref={(element) => { if (element) element.indeterminate = state.mixed }} onChange={(event) => select(relative, event.target.checked)} />
+      {folder ? <>{expanded.has(relative) ? <FolderOpen size={15} className="deployment-file-icon deployment-folder-icon" /> : <Folder size={15} className="deployment-file-icon deployment-folder-icon" />}<button type="button" className="deployment-tree-name" onClick={() => toggleFolder(relative)}>{item.name}</button></> : <><File size={15} className="deployment-file-icon" /><span className={item.kind === 'symlink' ? 'muted' : ''}>{item.name}{item.kind === 'symlink' ? ' ↗' : ''}</span></>}
+    </div>{folder && expanded.has(relative) && <ul className="deployment-tree-children">{renderNodes(relative)}</ul>}</li>
+  })
+  const refreshRuns = async (): Promise<void> => { setRuns(await window.api.deployments.runsList(profile.id)) }
+  const preview = async (): Promise<void> => {
+    if (!validateAction('deploy')) return
+    const requestId = crypto.randomUUID()
+    previewRequestIdRef.current = requestId
+    setPreviewProgress({ requestId, phase: 'scanning', filesTotal: 0, filesProcessed: 0, bytesTotal: 0, bytesProcessed: 0 })
+    setBusy(true)
+    try {
+      setView('deploy')
+      setPreviewData(null)
+      const next = await window.api.deployments.preview(profile, requestId)
+      if (previewRequestIdRef.current !== requestId) return
+      setPreviewData(next); setRun(null); setView('preview')
+    }
+    catch (error) { onError(errorMessage(error)) }
+    finally { if (previewRequestIdRef.current === requestId) { previewRequestIdRef.current = null; setPreviewProgress(null); setBusy(false) } }
+  }
+  const execute = async (): Promise<void> => {
+    if (!validateAction('deploy')) return
+    setBusy(true)
+    try {
+      const saved = await save(t('deployment.run')); if (!saved) return
+      const archiveFileName = JSON.stringify(saved) === JSON.stringify(profile) ? previewData?.archiveFileName ?? undefined : undefined
+      const requestId = crypto.randomUUID()
+      deploymentRequestIdRef.current = requestId
+      setDeploymentProgress({ requestId, phase: 'preparing', bytesTotal: 0, bytesProcessed: 0 })
+      setRun(null)
+      setViewRunId(null)
+      setView('run')
+      const next = await window.api.deployments.execute(saved.id, sessionId, archiveFileName, requestId)
+      setRun(next)
+      await refreshRuns()
+      if (next.status === 'failed') onError(t('deployment.failed', { error: next.error ?? '' }))
+    } catch (error) { onError(errorMessage(error)) }
+    finally { deploymentRequestIdRef.current = null; setDeploymentProgress(null); setBusy(false) }
+  }
+  const confirm = async (id: string): Promise<void> => {
+    setDeploymentProgress({ requestId: id, phase: 'executing-command', bytesTotal: 0, bytesProcessed: 0 })
+    setBusy(true)
+    try {
+      const next = await window.api.deployments.confirm(id)
+      if (view === 'history') { setHistoryRun(next); if (run?.id === id) setRun(next) }
+      else { setRun(next); if (historyRun?.id === id) setHistoryRun(next) }
+      if (view === 'history') window.requestAnimationFrame(() => historyResultRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' }))
+      await refreshRuns()
+      if (next.status === 'failed') onError(t('deployment.failed', { error: next.error ?? '' }))
+    }
+    catch (error) { onError(errorMessage(error)) }
+    finally { setDeploymentProgress(null); setBusy(false) }
+  }
+  const cancel = async (id: string): Promise<void> => {
+    try {
+      await window.api.deployments.cancel(id); await refreshRuns()
+      if (run?.id === id || historyRun?.id === id) {
+        const next = await window.api.deployments.runGet(id)
+        if (run?.id === id) setRun(next)
+        if (historyRun?.id === id) setHistoryRun(next)
+      }
+    }
+    catch (error) { onError(errorMessage(error)) }
+  }
+  const statusText: Record<string, string> = { draft: t('deployment.status.draft'), preparing: t('deployment.status.preparing'), packaging: t('deployment.status.packaging'), uploading: t('deployment.status.uploading'), 'awaiting-confirmation': t('deployment.status.awaiting'), 'executing-command': t('deployment.status.executing'), succeeded: t('deployment.status.succeeded'), failed: t('deployment.status.failed'), cancelled: t('deployment.status.cancelled') }
+  const activeRun = runs.find((item) => !['succeeded', 'failed', 'cancelled'].includes(item.status))
+  const shownRun = viewRunId ? (run?.id === viewRunId ? run : runs.find((item) => item.id === viewRunId) ?? null) : run && !['succeeded', 'failed', 'cancelled'].includes(run.status) ? run : activeRun ?? run
+  const viewedRunStatus = viewRunId ? runs.find((item) => item.id === viewRunId)?.status : undefined
+  useEffect(() => {
+    if (view !== 'run' || !viewRunId || run?.id === viewRunId || !viewedRunStatus || !['succeeded', 'failed', 'cancelled'].includes(viewedRunStatus)) return
+    let active = true
+    void window.api.deployments.runGet(viewRunId).then((details) => { if (active && details) setRun(details) }).catch((error) => { if (active) onError(errorMessage(error)) })
+    return () => { active = false }
+  }, [view, viewRunId, viewedRunStatus, run?.id])
+  const switchProfile = (next: DeploymentProfile): void => { previewRequestIdRef.current = null; deploymentRequestIdRef.current = null; setPreviewProgress(null); setDeploymentProgress(null); setBusy(false); const selected = withHookDefaults(next); savedProfileRef.current = selected; profileTouchedRef.current = true; setProfile(selected); setPreviewData(null); setRun(null); setViewRunId(null); setHistoryRun(null); setRuns([]); setSelectedRuns(new Set()); setAiComposerOpen(false); setEditorExpanded(false); setValidationAction(null); setView('deploy') }
+  const requestSwitchProfile = async (next: DeploymentProfile): Promise<void> => { if (next.id !== profile.id && await discardChanges()) switchProfile(next) }
+  const chooseWorkspace = async (): Promise<void> => {
+    try {
+      const path = await window.api.files.chooseLocalDirectory()
+      if (!path || (window.api.platform === 'win32' ? path.replaceAll('\\', '/').toLowerCase() === profile.workspace.replaceAll('\\', '/').toLowerCase() : path === profile.workspace)) return
+      if (profile.selection.included.length > 0 && !await onConfirm({ title: t('deployment.changeWorkspaceTitle'), message: t('deployment.changeWorkspaceMessage'), kind: 'warning', confirmLabel: t('deployment.changeWorkspace') })) return
+      profileTouchedRef.current = true
+      setProfile((current) => ({ ...current, workspace: path, selection: { included: [], excluded: [] } })); setPreviewData(null)
+    } catch (error) { onError(errorMessage(error)) }
+  }
+  const exportTasks = async (): Promise<void> => {
+    try { const path = await window.api.deployments.exportBundle(bookmark.id); if (path) onNotice(t('deployment.exportedTasks', { path })) }
+    catch (error) { onError(errorMessage(error)) }
+  }
+  const pickImportTasks = async (): Promise<void> => {
+    if (!await discardChanges()) return
+    try { const bundle = await window.api.deployments.pickBundle(); if (bundle) setImportBundle(bundle) }
+    catch (error) { onError(errorMessage(error)) }
+  }
+  const visibleIssues = validationAction ? validationIssues(validationAction) : []
+  const fieldIssue = (field: DeploymentField): string | undefined => visibleIssues.find((issue) => issue.field === field)?.message
+  const progressMaximum = previewProgress?.phase === 'hashing' ? previewProgress.bytesTotal || previewProgress.filesTotal : 0
+  const progressValue = previewProgress?.phase === 'hashing' ? previewProgress.bytesTotal ? Math.min(previewProgress.bytesProcessed, previewProgress.bytesTotal) : previewProgress.filesProcessed : 0
+  const progressPercent = progressMaximum ? Math.round(progressValue / progressMaximum * 100) : 0
+  const deploymentPercent = (() => {
+    if (!deploymentProgress) return 0
+    const fraction = deploymentProgress.bytesTotal ? Math.min(1, deploymentProgress.bytesProcessed / deploymentProgress.bytesTotal) : 0
+    const archive = profile.archiveEnabled
+    switch (deploymentProgress.phase) {
+      case 'preparing': return 0
+      case 'snapshot': return Math.round((archive ? 25 : 35) * fraction)
+      case 'packaging': return Math.round(25 + 35 * fraction)
+      case 'connecting': return archive ? 60 : 35
+      case 'uploading': return Math.round((archive ? 60 : 35) + (archive ? 35 : 60) * fraction)
+      case 'executing-command': return 95
+    }
+  })()
+  const archiveDestination = previewData?.archiveFileName ? `${previewData.remoteTargetDirectory.replace(/\/$/, '')}/${previewData.archiveFileName}` : ''
+  const renderRunResult = (shownRun: DeploymentRun, elementRef: React.RefObject<HTMLElement | null>): React.JSX.Element => <section className="deployment-section deployment-result" ref={elementRef}>
+        <div className="deployment-result-heading"><strong aria-live="polite">{statusText[shownRun.status] ?? shownRun.status}</strong><time>{new Date(shownRun.startedAt).toLocaleString()}</time>{shownRun.commandExitCode !== undefined && shownRun.commandExitCode !== null && <span>{t('deployment.exitCode')}: {shownRun.commandExitCode}</span>}</div>
+        <code>{shownRun.remoteDestinationDir}</code>
+        {shownRun.error && <p className="deployment-result-error">{shownRun.error}</p>}
+        {shownRun.hookError && <p className="deployment-result-error">{t('deployment.hookFailed')}: {shownRun.hookError}</p>}
+        {shownRun.status === 'awaiting-confirmation' && <>{shownRun.commandLine && <pre className="deployment-code">{shownRun.commandLine}</pre>}<div className="dialog-actions"><button className="secondary-button" disabled={busy} onClick={() => void cancel(shownRun.id)}>{t('deployment.cancelCommand')}</button><button className="primary-button" disabled={busy} onClick={() => void confirm(shownRun.id)}>{t('deployment.confirmRun')}</button></div></>}
+        {(shownRun.commandExitCode !== undefined && shownRun.commandExitCode !== null || Boolean(shownRun.stdout) || Boolean(shownRun.stderr)) && <div className="deployment-shell-result">
+          <strong>{t('deployment.shellResult')}</strong>
+          <div className="deployment-copy-heading"><span>{t('deployment.output')}</span>{shownRun.stdout && <button className="text-button" onClick={() => void window.api.system.writeClipboard(shownRun.stdout)}>{t('deployment.copy')}</button>}</div>
+          <pre className="deployment-code">{shownRun.stdout || t('deployment.noOutput')}</pre>
+          {shownRun.stderr && <><div className="deployment-copy-heading"><span>{t('deployment.errorOutput')}</span><button className="text-button" onClick={() => void window.api.system.writeClipboard(shownRun.stderr)}>{t('deployment.copy')}</button></div><pre className="deployment-code">{shownRun.stderr}</pre></>}
+        </div>}
+        {shownRun.commandLine && shownRun.status !== 'awaiting-confirmation' && <details className="deployment-preview-details"><summary>{t('deployment.expandedCommand')}</summary><pre className="deployment-code">{shownRun.commandLine}</pre></details>}
+      </section>
+  return <Modal title={t('deployment.title') + ' · ' + bookmark.name} onClose={() => void requestClose()} wide className="deployment-modal" suppressContextMenu><div className="deployment-dialog">
+    <div className="deployment-profile-bar">
+      <label><span>{t('deployment.task')}{hasUnsavedChanges() && <em className="deployment-dirty-mark">{t('deployment.unsavedMark')}</em>}</span><select value={profile.id} disabled={busy} onChange={(event) => { const next = profiles.find((item) => item.id === event.target.value); if (next) void requestSwitchProfile(next) }}><option value={profile.id}>{profiles.some((item) => item.id === profile.id) ? profile.name || t('common.unnamedProfile') : t('deployment.new')}</option>{profiles.filter((item) => item.id !== profile.id).map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select></label>
+      {profiles.some((item) => item.id === profile.id) && <button className="secondary-button" disabled={busy} onClick={() => void requestSwitchProfile(empty())}><CirclePlus size={15} />{t('common.new')}</button>}
+      {profiles.some((item) => item.id === profile.id) && <button className="icon-button danger" disabled={busy} title={t('deployment.delete')} onClick={async () => { if (!await onConfirm({ title: t('deployment.delete'), message: t('deployment.deleteConfirm'), kind: 'danger', confirmLabel: t('deployment.delete') })) return; try { await window.api.deployments.remove(profile.id); const next = profiles.filter((item) => item.id !== profile.id); setProfiles(next); switchProfile(next[0] ?? empty()) } catch (error) { onError(errorMessage(error)) } }}><Trash2 size={15} /></button>}
+      <div className="deployment-profile-transfer-actions"><button type="button" className="secondary-button" disabled={busy} onClick={() => void pickImportTasks()}><Upload size={15} />{t('deployment.importTasks')}</button><button type="button" className="secondary-button" disabled={busy || profiles.length === 0} onClick={() => void exportTasks()}><Download size={15} />{t('deployment.exportTasks')}</button></div>
+    </div>
+    <nav className="deployment-tabs" aria-label={t('deployment.title')}><button type="button" className={view !== 'history' ? 'active' : ''} aria-current={view !== 'history' ? 'page' : undefined} onClick={() => { setViewRunId(null); setView('deploy') }}>{t('deployment.title')}</button><button type="button" className={view === 'history' ? 'active' : ''} aria-current={view === 'history' ? 'page' : undefined} onClick={() => setView('history')}>{t('deployment.history')}{runs.length > 0 && <span>{runs.length}</span>}</button></nav>
+    <div className="deployment-flow" hidden={view !== 'deploy'}>
+      {shownRun && !['succeeded', 'failed', 'cancelled'].includes(shownRun.status) && <button type="button" className="deployment-active-banner" onClick={() => { setViewRunId(shownRun.id); setView('run') }}><span>{t('deployment.activeRun')}: {statusText[shownRun.status] ?? shownRun.status}</span><ChevronRight size={15} /></button>}
+      <section className="deployment-section deployment-files">
+        <div className="deployment-source-fields">
+          <label>{t('deployment.name')}<input ref={nameRef} value={profile.name} aria-invalid={Boolean(fieldIssue('name'))} placeholder={t('deployment.namePlaceholder')} onChange={(event) => set('name', event.target.value)} />{fieldIssue('name') && <small className="deployment-field-error">{fieldIssue('name')}</small>}</label>
+          <label>{t('deployment.workspace')}<div className="input-button"><input readOnly value={profile.workspace} placeholder={t('deployment.noWorkspace')} title={profile.workspace} /><button ref={workspaceButtonRef} className="secondary-button" onClick={() => void chooseWorkspace()}>{profile.workspace ? t('deployment.changeWorkspace') : t('common.choose')}</button></div>{fieldIssue('workspace') && <small className="deployment-field-error">{fieldIssue('workspace')}</small>}</label>
+        </div>
+        <section className="deployment-file-panel">
+          <header><strong>{t('deployment.filesHeading')}</strong>{profile.workspace && <small>{t('deployment.selectionHint')}</small>}</header>
+          {profile.workspace ? <><div className="deployment-tree"><ul className="deployment-tree-list"><li className="deployment-tree-node deployment-tree-root"><div className="deployment-tree-row deployment-root-row"><span className="deployment-tree-spacer" /><input type="checkbox" aria-label={t('deployment.selectAllFiles')} checked={profile.selection.included.includes('.') && profile.selection.excluded.length === 0} ref={(element) => { rootSelectionRef.current = element; if (element) element.indeterminate = profile.selection.included.includes('.') ? profile.selection.excluded.length > 0 : profile.selection.included.length > 0 }} onChange={(event) => select('.', event.target.checked)} /><FolderOpen size={15} className="deployment-file-icon deployment-folder-icon" /><strong title={profile.workspace}>{profile.workspace.split(/[\\/]/).filter(Boolean).pop() || profile.workspace}</strong></div><ul className="deployment-tree-children">{renderNodes('.')}</ul></li></ul></div>{previewData && <footer>{t('deployment.selected', { count: previewData.files.length, size: formatFileSize(previewData.totalSize) })}</footer>}</> : <div className="deployment-empty"><strong>{t('deployment.emptyWorkspaceTitle')}</strong><p>{t('deployment.emptyWorkspaceHint')}</p></div>}
+        </section>
+        {fieldIssue('selection') && <small className="deployment-field-error">{fieldIssue('selection')}</small>}
+      </section>
+      <section className="deployment-section deployment-settings">
+        <div className="deployment-setting-card deployment-target-card">
+          <label>{t('deployment.remoteTarget')}<input ref={remoteDirectoryRef} value={profile.remoteDirectory} aria-invalid={Boolean(fieldIssue('remoteDirectory'))} onChange={(event) => set('remoteDirectory', event.target.value)} />{fieldIssue('remoteDirectory') && <small className="deployment-field-error">{fieldIssue('remoteDirectory')}</small>}</label>
+          <div className="deployment-archive-controls"><label className="check-label"><input type="checkbox" checked={profile.archiveEnabled} onChange={(event) => set('archiveEnabled', event.target.checked)} />{t('deployment.archive')}</label>{profile.archiveEnabled && <label>{t('deployment.archiveFormat')}<select value={profile.archiveFormat ?? 'zip'} onChange={(event) => set('archiveFormat', event.target.value as DeploymentProfile['archiveFormat'])}><option value="zip">ZIP</option><option value="tarGz">tar.gz</option></select></label>}</div>
+          <p className="deployment-upload-hint">{t('deployment.uploadHint')}</p>
+        </div>
+        <details className="deployment-setting-card deployment-optional" key={profile.id + '-shell'}>
+          <summary><span>{t('deployment.shell')}</span>{profile.shellTemplate.trim() && <small>{profile.confirmManual ? t('deployment.shellSummaryConfirm') : t('deployment.shellSummaryAuto')}</small>}</summary>
+          <div className="deployment-optional-body">
+            <div className="deployment-shell-toolbar"><label htmlFor="deployment-shell-editor">{t('deployment.shellCommand')}</label><button type="button" className="secondary-button" onClick={() => setAiComposerOpen(true)}><WandSparkles size={15} />{t('deployment.aiAssist')}</button></div>
+            <div className="deployment-shell-editor-wrap"><textarea id="deployment-shell-editor" ref={editorExpanded ? undefined : shellEditorRef} rows={5} className="deployment-shell" value={profile.shellTemplate} onChange={(event) => set('shellTemplate', event.target.value)} spellCheck={false} /><button type="button" className="icon-button deployment-editor-corner-button" title={t('deployment.expandEditor')} aria-label={t('deployment.expandEditor')} aria-expanded={editorExpanded} onClick={toggleEditorExpanded}><Maximize2 size={16} /></button></div>
+            {/\bsudo\b/.test(profile.shellTemplate) && <p className="deployment-sudo-hint">{t('deployment.sudoHint')}</p>}
+            <div className="deployment-shell-help"><span>{t('deployment.variableHint')}</span><code>{t('deployment.shellExample')}</code></div>
+            <div className="deployment-variable-grid">{deploymentVariables.map((variable) => <button type="button" className="deployment-variable" key={variable.name} onClick={() => insertShellVariable(variable.name)} aria-label={`${t('deployment.insertVariable')} {{${variable.name}}}`}><span className="deployment-variable-name"><code>{`{{${variable.name}}}`}</code><CirclePlus size={15} /></span><span className="deployment-variable-description">{t(variable.descriptionKey)}</span></button>)}</div>
+            {profile.shellTemplate.trim() && <><label className="check-label"><input type="checkbox" checked={profile.confirmManual} onChange={(event) => set('confirmManual', event.target.checked)} />{t('deployment.confirmManual')}</label><p className="deployment-upload-hint">{t('deployment.confirmManualHint')}</p></>}
+          </div>
+        </details>
+        <details ref={scheduleDetailsRef} className="deployment-setting-card deployment-optional" key={profile.id + '-schedule'}>
+          <summary><span>{t('deployment.schedule')}</span>{profile.schedule.enabled && <small>{t('deployment.scheduleSummary', { time: profile.schedule.dailyTime })}</small>}</summary>
+          <div className="deployment-optional-body deployment-schedule"><label className="check-label"><input type="checkbox" checked={profile.schedule.enabled} onChange={(event) => set('schedule', { ...profile.schedule, enabled: event.target.checked })} />{t('deployment.schedule')}</label><input ref={scheduleTimeRef} type="time" disabled={!profile.schedule.enabled} aria-invalid={Boolean(fieldIssue('schedule'))} value={profile.schedule.dailyTime} onChange={(event) => set('schedule', { ...profile.schedule, dailyTime: event.target.value })} />{fieldIssue('schedule') && <small className="deployment-field-error">{fieldIssue('schedule')}</small>}</div>
+        </details>
+        <details ref={hookDetailsRef} className="deployment-setting-card deployment-optional" key={profile.id + '-hook'}>
+          <summary><span>{t('deployment.hook')}</span>{profile.hookUrl?.trim() && <small>{profile.hookTemplate === 'feishu' ? t('deployment.hookFeishu') : t('deployment.hookCustom')}</small>}</summary>
+          <div className="deployment-optional-body">
+            <p className="deployment-upload-hint">{t('deployment.hookHint')}</p>
+            <label className="deployment-hook-url">{t('deployment.hookUrl')}<input ref={hookUrlRef} type="url" value={profile.hookUrl ?? ''} aria-invalid={Boolean(fieldIssue('hookUrl'))} placeholder="https://" onChange={(event) => set('hookUrl', event.target.value)} />{fieldIssue('hookUrl') && <small className="deployment-field-error">{fieldIssue('hookUrl')}</small>}</label>
+            <div className="deployment-hook-template" role="group" aria-label={t('deployment.hookTemplate')}><button type="button" className={profile.hookTemplate === 'feishu' ? 'selected' : ''} aria-pressed={profile.hookTemplate === 'feishu'} onClick={() => set('hookTemplate', 'feishu')}>{t('deployment.hookFeishu')}</button><button type="button" className={profile.hookTemplate === 'custom' ? 'selected' : ''} aria-pressed={profile.hookTemplate === 'custom'} onClick={() => set('hookTemplate', 'custom')}>{t('deployment.hookCustom')}</button></div>
+            {profile.hookTemplate === 'feishu' ? <p className="deployment-hook-help">{t('deployment.hookFeishuHint')}</p> : <><label className="deployment-hook-body">{t('deployment.hookBody')}<textarea ref={hookEditorRef} rows={6} value={profile.hookBody ?? ''} aria-invalid={Boolean(fieldIssue('hookBody'))} placeholder={'{\n  "text": {{summary}},\n  "success": {{succeeded}}\n}'} onChange={(event) => set('hookBody', event.target.value)} spellCheck={false} />{fieldIssue('hookBody') && <small className="deployment-field-error">{fieldIssue('hookBody')}</small>}</label><div className="deployment-variable-heading"><strong>{t('deployment.hookVariablesTitle')}</strong><span>{t('deployment.hookVariables')}</span></div><div className="deployment-hook-variable-grid">{deploymentHookVariables.map((variable) => <button type="button" className="deployment-variable" key={variable.name} onClick={() => insertHookVariable(variable.name)} aria-label={`${t('deployment.insertVariable')} {{${variable.name}}}：${t(variable.descriptionKey)}`}><span className="deployment-variable-name"><code title={`{{${variable.name}}}`}>{`{{${variable.name}}}`}</code><CirclePlus size={15} /></span><span className="deployment-variable-description">{t(variable.descriptionKey)}</span></button>)}</div></>}
+          </div>
+        </details>
+      </section>
+    </div>
+    {view === 'preview' && previewData && <div className="deployment-flow deployment-review-view"><div className="deployment-view-heading"><button type="button" className="text-button" onClick={() => { setViewRunId(null); setView('deploy') }}><ArrowRight size={14} />{t('deployment.backToEdit')}</button><strong>{t('deployment.preview')}</strong><span>{t('deployment.selected', { count: previewData.files.length, size: formatFileSize(previewData.totalSize) })}</span></div><section className="deployment-section deployment-preview" ref={previewRef}>
+        {profile.archiveEnabled && <p className="deployment-preview-note">{t('deployment.previewNoArchiveHint')}</p>}
+        <div className="deployment-preview-paths"><div className="deployment-path"><strong>{t('deployment.remoteTarget')}</strong><code>{previewData.remoteTargetDirectory}</code></div>{archiveDestination && <div className="deployment-path"><strong>{t('deployment.archivePath')}</strong><code>{archiveDestination}</code></div>}</div>
+        <div className="deployment-preview-tree-panel"><header><strong>{t('deployment.fileTree')}</strong><span>{profile.archiveEnabled ? t('deployment.archiveTreeHint') : t('deployment.filesTreeHint')}</span></header><DeploymentPreviewTree files={previewData.files} root={previewData.archiveFileName ?? previewData.remoteTargetDirectory} archive={Boolean(previewData.archiveFileName)} /></div>
+        <p className="deployment-overwrite-hint">{t('deployment.overwriteHint')}</p>
+        {previewData.commandPreview && <details className="deployment-preview-details"><summary>{t('deployment.expandedCommand')}</summary><pre className="deployment-code">{previewData.commandPreview}</pre></details>}
+      </section></div>}
+    {view === 'run' && <div className="deployment-flow deployment-run-view"><div className="deployment-view-heading"><button type="button" className="text-button" onClick={() => { setViewRunId(null); setView('deploy') }}><ArrowRight size={14} />{t('deployment.backToEdit')}</button><strong>{t('deployment.runView')}</strong></div>{deploymentProgress && <div className="deployment-run-progress" role="status"><span>{t(`deployment.progress.${deploymentProgress.phase}`)}{deploymentProgress.bytesTotal ? ` · ${formatFileSize(deploymentProgress.bytesProcessed)}/${formatFileSize(deploymentProgress.bytesTotal)}` : ''}</span><progress value={deploymentPercent} max={100} aria-label={t('deployment.runProgress')} /></div>}{shownRun ? renderRunResult(shownRun, resultRef) : <p className="deployment-preview-note">{t('deployment.runStarting')}</p>}<p className="deployment-preview-note">{t('deployment.runInBackgroundHint')}</p></div>}
+    {view === 'history' && <div className="deployment-flow deployment-history-view">
+      <div className="deployment-history-toolbar"><button className="secondary-button" onClick={() => void refreshRuns().catch((error) => onError(errorMessage(error)))}>{t('deployment.refresh')}</button><button className="secondary-button" disabled={selectedRuns.size === 0} onClick={async () => { const accepted = await onConfirm({ title: t('deployment.deleteHistory'), message: t('deployment.localDeleteOnly'), kind: 'danger', confirmLabel: t('deployment.deleteHistory') }); if (!accepted) return; try { await window.api.deployments.runsRemove([...selectedRuns]); setSelectedRuns(new Set()); setHistoryRun(null); await refreshRuns() } catch (error) { onError(errorMessage(error)) } }}>{t('deployment.deleteHistory')}</button></div>
+      <div className="deployment-history">{runs.length === 0 ? <p className="deployment-history-empty">{t('deployment.noHistory')}</p> : runs.map((item) => <div className="deployment-history-row" key={item.id}>
+        <input type="checkbox" checked={selectedRuns.has(item.id)} onChange={(event) => setSelectedRuns((current) => { const next = new Set(current); if (event.target.checked) next.add(item.id); else next.delete(item.id); return next })} />
+        <button className="deployment-history-entry" onClick={() => { void window.api.deployments.runGet(item.id).then((next) => { setHistoryRun(next); window.requestAnimationFrame(() => historyResultRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' })) }).catch((error) => onError(errorMessage(error))) }}><time>{new Date(item.startedAt).toLocaleString()}</time><span className={'deployment-run-status ' + item.status}>{statusText[item.status] ?? item.status}</span><span className="deployment-history-meta">{item.triggerType === 'scheduled' ? t('deployment.scheduled') : item.triggerType === 'api' ? t('deployment.api') : t('deployment.manual')} · {t('deployment.filesCount')}: {item.selectedFileCount} · {t('deployment.duration')}: {item.finishedAt ? Math.round((Date.parse(item.finishedAt) - Date.parse(item.startedAt)) / 1000) + 's' : '…'} · {t('deployment.exitCode')}: {item.commandExitCode ?? '—'}</span></button>
+        {!['succeeded', 'failed', 'cancelled'].includes(item.status) && <button className="icon-button" title={t('deployment.cancelRun')} onClick={() => void cancel(item.id)}><X size={14} /></button>}
+      </div>)}</div>
+      {historyRun && renderRunResult(historyRun, historyResultRef)}
+    </div>}
+    <div className="deployment-footer">
+      {(view === 'deploy' || view === 'preview') && <div className="deployment-footer-preview">
+        <button className="secondary-button" title={previewData ? t('deployment.previewAgainHint') : undefined} disabled={busy} onClick={() => void preview()}>{previewData ? t('deployment.previewAgain') : t('deployment.previewUpload')}</button>
+        {previewProgress ? <div className="deployment-progress" role="status">
+          <span>{previewProgress.phase === 'scanning' ? t('deployment.previewScanning') : `${t('deployment.previewHashing')} ${progressPercent}% · ${previewProgress.filesProcessed}/${previewProgress.filesTotal} · ${formatFileSize(previewProgress.bytesProcessed)}/${formatFileSize(previewProgress.bytesTotal)}`}</span>
+          <progress value={progressMaximum ? progressValue : undefined} max={progressMaximum || undefined} aria-label={t('deployment.previewProgress')} />
+        </div> : view === 'deploy' && <small className={visibleIssues.length ? 'deployment-footer-error' : 'deployment-footer-hint'}>{visibleIssues[0]?.message ?? t('deployment.previewOptionalHint')}</small>}
+      </div>}
+      <div className="deployment-footer-actions">
+        <button className="secondary-button" onClick={() => void requestClose()}>{t('common.close')}</button>
+        {view === 'deploy' && <>
+          <button className="secondary-button" disabled={busy} onClick={() => void saveTask()}>{t('deployment.save')}</button>
+          <button className="primary-button" disabled={busy} onClick={() => void execute()}><Rocket size={15} />{busy ? t('deployment.running') : t('deployment.run')}</button>
+        </>}
+        {view === 'preview' && <button className="primary-button" disabled={busy} onClick={() => void execute()}><Rocket size={15} />{t('deployment.run')}</button>}
+        {view === 'run' && shownRun && !['succeeded', 'failed', 'cancelled', 'awaiting-confirmation'].includes(shownRun.status) && <button className="danger-button" onClick={() => void cancel(shownRun.id)}>{t('deployment.cancelRun')}</button>}
+      </div>
+    </div>
+    {editorExpanded && <div className="deployment-editor-overlay" role="dialog" aria-modal="true" aria-label={t('deployment.shellCommand')} onKeyDown={(event) => { if (event.key === 'Escape') { event.stopPropagation(); toggleEditorExpanded() } }}>
+      <div className="deployment-editor-header"><strong>{t('deployment.shellCommand')}</strong><button type="button" className="secondary-button" onClick={() => setAiComposerOpen(true)}><WandSparkles size={15} />{t('deployment.aiAssist')}</button></div>
+      <div className="deployment-editor-large-wrap"><textarea ref={shellEditorRef} className="deployment-editor-large" value={profile.shellTemplate} onChange={(event) => set('shellTemplate', event.target.value)} spellCheck={false} aria-label={t('deployment.shellCommand')} /><button type="button" className="icon-button deployment-editor-corner-button" title={t('deployment.collapseEditor')} aria-label={t('deployment.collapseEditor')} aria-expanded={editorExpanded} onClick={toggleEditorExpanded}><Minimize2 size={17} /></button></div>
+      <div className="deployment-editor-bottom"><p>{t('deployment.variableHint')}</p><div className="deployment-editor-variables">{deploymentVariables.map((variable) => <button type="button" className="secondary-button" key={variable.name} title={t(variable.descriptionKey)} onClick={() => insertShellVariable(variable.name)}>{`{{${variable.name}}}`}</button>)}</div>{profile.shellTemplate.trim() && <label className="check-label"><input type="checkbox" checked={profile.confirmManual} onChange={(event) => set('confirmManual', event.target.checked)} />{t('deployment.confirmManual')}</label>}</div>
+    </div>}
+    {aiComposerOpen && <DeploymentAiComposer archiveEnabled={profile.archiveEnabled} archiveFormat={profile.archiveFormat ?? 'zip'} hasCommand={Boolean(profile.shellTemplate.trim())} settings={aiSettings} onSettings={onOpenAiSettings} onClose={closeAiComposer} onUse={(command) => { set('shellTemplate', command); closeAiComposer() }} />}
+    {importBundle && <DeploymentImportDialog bundle={importBundle} target={bookmark} onClose={() => setImportBundle(null)} onImported={(items) => { const first = items[0]; if (!first) return; setProfiles((current) => [...items, ...current]); switchProfile(first); setImportBundle(null); onNotice(t('deployment.importedTasks', { count: items.length })) }} onError={onError} />}
+  </div></Modal>
+}
+
+function SettingsDialog({ initialSection, settings, backgroundImage, appIcons, uiTheme, appLanguage, aiSettings, onAiSettingsChange, onThemePreview, onLanguagePreview, onClose, onSave, onConfirm, onNotice, onError, raised = false }: { initialSection: SettingsSection; settings: TerminalSettings; backgroundImage: string; appIcons: AppIconSettings; uiTheme: UiTheme; appLanguage: AppLanguage; aiSettings: AiSettings; onAiSettingsChange(settings: AiSettings): void; onThemePreview(theme: UiTheme): void; onLanguagePreview(language: AppLanguage): void; onClose(): void; onSave(settings: TerminalSettings, backgroundImage: string, appIcon: AppIconId, uiTheme: UiTheme, appLanguage: AppLanguage, ai: AiSettingsInput): void; onConfirm: ConfirmAction; onNotice(message: string): void; onError(message: string): void; raised?: boolean }): React.JSX.Element {
   const { t } = useI18n()
   const [form, setForm] = useState<TerminalSettings>({ ...settings })
   const [previewImage, setPreviewImage] = useState(backgroundImage)
@@ -1036,6 +1577,10 @@ function SettingsDialog({ initialSection, settings, backgroundImage, appIcons, u
   const [apiKey, setApiKey] = useState('')
   const [testingAi, setTestingAi] = useState(false)
   const [aiTested, setAiTested] = useState(false)
+  const [webApiStatus, setWebApiStatus] = useState<WebApiStatus | null>(null)
+  const [webApiConfig, setWebApiConfig] = useState<WebApiConfig | null>(null)
+  const [webApiReferenceOpen, setWebApiReferenceOpen] = useState(false)
+  const [savingWebApi, setSavingWebApi] = useState(false)
   const [checkingUpdates, setCheckingUpdates] = useState(false)
   const [diagnosticPath, setDiagnosticPath] = useState('')
   const [section, setSection] = useState<SettingsSection>(initialSection)
@@ -1054,6 +1599,24 @@ function SettingsDialog({ initialSection, settings, backgroundImage, appIcons, u
       .catch(() => { if (active) setSystemFonts([]) })
     return () => { active = false }
   }, [section, systemFonts])
+  useEffect(() => {
+    if (section !== 'webApi' || webApiStatus) return
+    let active = true
+    void window.api.webApi.get().then((status) => { if (active) { setWebApiStatus(status); setWebApiConfig(status.config) } }).catch((error) => { if (active) onError(errorMessage(error)) })
+    return () => { active = false }
+  }, [section, webApiStatus])
+  const saveWebApi = async (): Promise<void> => {
+    if (!webApiConfig) return
+    setSavingWebApi(true)
+    try { await window.api.webApi.save(webApiConfig); onNotice(t('webApi.saved')); onClose() }
+    catch (error) { onError(errorMessage(error)); void window.api.webApi.get().then(setWebApiStatus).catch(() => {}) }
+    finally { setSavingWebApi(false) }
+  }
+  const regenerateWebApiToken = async (): Promise<void> => {
+    if (!await onConfirm({ title: t('webApi.regenerateToken'), message: t('webApi.regenerateConfirm'), kind: 'warning', confirmLabel: t('webApi.regenerateToken') })) return
+    try { setWebApiStatus(await window.api.webApi.regenerateToken()); onNotice(t('webApi.tokenRegenerated')) }
+    catch (error) { onError(errorMessage(error)) }
+  }
   const chooseBackground = async (): Promise<void> => {
     try {
       const path = await window.api.settings.chooseTerminalBackground()
@@ -1062,10 +1625,6 @@ function SettingsDialog({ initialSection, settings, backgroundImage, appIcons, u
       set('backgroundImagePath', path)
       setPreviewImage(image)
     } catch (error) { onError(errorMessage(error)) }
-  }
-  const reset = (): void => {
-    if (section === 'ai') { setAiForm({ ...DEFAULT_AI_SETTINGS, apiKeyConfigured: aiForm.apiKeyConfigured }); setApiKey(''); setAiTested(false); return }
-    setForm({ ...DEFAULT_TERMINAL_SETTINGS }); setManualFontMode(false); setManualFontName('JetBrains Mono'); setPreviewImage(''); setAppIcon('ssh'); selectTheme('system'); setDialogLanguage('zh-CN'); onLanguagePreview('zh-CN')
   }
   const testAi = async (): Promise<void> => {
     setTestingAi(true); setAiTested(false)
@@ -1106,8 +1665,8 @@ function SettingsDialog({ initialSection, settings, backgroundImage, appIcons, u
   const installedFonts = (systemFonts ?? []).filter((font) => font.toLocaleLowerCase() !== 'jetbrains mono')
   const installedFont = installedFonts.find((font) => font.toLocaleLowerCase() === currentFontName.toLocaleLowerCase())
   const fontChoice = manualFontMode ? '__manual__' : currentFontName === 'JetBrains Mono' ? '__bundled__' : currentFontName === 'monospace' ? '__system__' : systemFonts === null ? '__current__' : installedFont ?? '__manual__'
-  return <Modal title={t('common.settings')} onClose={onClose} wide className="settings-dialog"><form className="form-grid terminal-settings-form" onSubmit={(event) => { event.preventDefault(); onSave(form, previewImage, appIcon, theme, language, aiInput()) }}>
-    <div className="settings-tabs" role="tablist" aria-label={t('app.settingsCategories')}><button type="button" role="tab" aria-selected={section === 'appearance'} className={section === 'appearance' ? 'active' : ''} onClick={() => setSection('appearance')}><Palette size={15} />{t('app.appearance')}</button><button type="button" role="tab" aria-selected={section === 'terminal'} className={section === 'terminal' ? 'active' : ''} onClick={() => setSection('terminal')}><SquareTerminal size={15} />{t('common.terminal')}</button><button type="button" role="tab" aria-selected={section === 'ai'} className={section === 'ai' ? 'active' : ''} onClick={() => setSection('ai')}><Bot size={15} />AI</button><button type="button" role="tab" aria-selected={section === 'about'} className={section === 'about' ? 'active' : ''} onClick={() => setSection('about')}><Info size={15} />{t('app.about')}</button></div>
+  return <><Modal title={t('common.settings')} onClose={webApiReferenceOpen ? () => undefined : onClose} wide raised={raised} className="settings-dialog"><form className="form-grid terminal-settings-form" onSubmit={(event) => { event.preventDefault(); if (section === 'webApi') { void saveWebApi(); return } onSave(form, previewImage, appIcon, theme, language, aiInput()) }}>
+    <div className="settings-tabs" role="tablist" aria-label={t('app.settingsCategories')}><button type="button" role="tab" aria-selected={section === 'appearance'} className={section === 'appearance' ? 'active' : ''} onClick={() => setSection('appearance')}><Palette size={15} />{t('app.appearance')}</button><button type="button" role="tab" aria-selected={section === 'terminal'} className={section === 'terminal' ? 'active' : ''} onClick={() => setSection('terminal')}><SquareTerminal size={15} />{t('common.terminal')}</button><button type="button" role="tab" aria-selected={section === 'ai'} className={section === 'ai' ? 'active' : ''} onClick={() => setSection('ai')}><Bot size={15} />AI</button><button type="button" role="tab" aria-selected={section === 'webApi'} className={section === 'webApi' ? 'active' : ''} onClick={() => setSection('webApi')}><Network size={15} />Web API</button><button type="button" role="tab" aria-selected={section === 'about'} className={section === 'about' ? 'active' : ''} onClick={() => setSection('about')}><Info size={15} />{t('app.about')}</button></div>
     <div className={`settings-content ${section}`}>
     {section === 'appearance' ? <><fieldset className="ui-theme-settings"><legend>{t('common.theme')}</legend><div className="theme-options" role="radiogroup" aria-label={t('common.theme')}>{themeOptions.map((option) => { const Icon = option.icon; return <button key={option.value} type="button" role="radio" aria-checked={theme === option.value} className={theme === option.value ? 'active' : ''} onClick={() => selectTheme(option.value)}><Icon size={17} /><span>{option.label}</span></button> })}</div></fieldset><fieldset className="ui-theme-settings"><legend>{t('common.language')}</legend><div className="theme-options" role="radiogroup" aria-label={t('common.language')}>{availableLanguages.map((option) => <button key={option.code} type="button" role="radio" aria-checked={language === option.code} className={language === option.code ? 'active' : ''} onClick={() => { setDialogLanguage(option.code); onLanguagePreview(option.code) }}><Languages size={17} /><span>{option.label}</span></button>)}</div></fieldset><fieldset className="app-icon-settings"><legend>{t('app.appIcon')}</legend><div className="app-icon-options">{appIcons.options.map((icon) => <label key={icon.id} className={appIcon === icon.id ? 'selected' : ''}><input type="radio" name="app-icon" checked={appIcon === icon.id} onChange={() => setAppIcon(icon.id)} /><img src={icon.dataUrl} alt="" /><span>{t(appIconMessageKeys[icon.id])}</span></label>)}</div></fieldset><section className="diagnostic-section"><strong>{t('app.diagnostics')}</strong><div className="diagnostic-export"><button type="button" className="secondary-button" onClick={async () => { try { const path = await window.api.diagnostics.export(); if (path) setDiagnosticPath(path) } catch (error) { onError(errorMessage(error)) } }}><FileInput size={15} />{t('app.exportDiagnostics')}</button>{diagnosticPath && <small title={diagnosticPath}>{diagnosticPath}</small>}</div></section></> : section === 'about' ? <div className="about-settings">
       <div className="about-product"><img src={appIcons.options.find((icon) => icon.id === appIcon)?.dataUrl} alt="" /><div><h2>Luna Remote</h2><span>{t('app.versionValue', { value0: window.api.appVersion })}</span></div></div>
@@ -1122,6 +1681,20 @@ function SettingsDialog({ initialSection, settings, backgroundImage, appIcons, u
       <div className="ai-provider-row"><label>{t('app.provider')}<select value={aiForm.provider} onChange={(event) => setAi('provider', event.target.value as AiProvider)}>{providerOptions.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}</select></label><label>{t('app.thinkingMode')}<select value={aiForm.thinkingMode} onChange={(event) => setAi('thinkingMode', event.target.value as AiThinkingMode)}><option value="default">{t('app.modelDefault')}</option><option value="disabled">{t('app.minimize')}</option><option value="enabled">{t('app.enabled')}</option></select></label></div>
       <small className="ai-thinking-hint">{thinkingHint}</small>
       <div className="ai-settings-test"><button type="button" className="secondary-button" disabled={testingAi || !aiForm.model.trim()} onClick={() => void testAi()}>{testingAi ? t('app.testing') : t('app.testConnection')}</button>{aiTested && <span><Check size={14} />{t('app.connected2')}</span>}</div>
+    </div> : section === 'webApi' ? <div className="web-api-settings">
+      {webApiConfig ? <>
+        <div className="web-api-intro"><span className="web-api-intro-icon"><Network size={19} /></span><div><strong>Web API</strong><p>{t('webApi.description')}</p></div><span className={`web-api-indicator ${webApiStatus?.running ? 'running' : ''}`}>{webApiStatus?.running ? t('webApi.running') : t('webApi.stopped')}</span></div>
+        {webApiStatus?.error && <p className="web-api-error">{webApiStatus.error}</p>}
+        <section className="web-api-card">
+          <div className="web-api-card-heading"><div><strong>{t('webApi.service')}</strong><small>{t('webApi.serviceHint')}</small></div><label className="web-api-switch"><input type="checkbox" aria-label={t('webApi.enable')} checked={webApiConfig.enabled} onChange={(event) => setWebApiConfig({ ...webApiConfig, enabled: event.target.checked })} /><span /></label></div>
+          {webApiConfig.enabled && <>
+            <div className="web-api-fields"><div className="web-api-field"><strong>{t('webApi.listenScope')}</strong><div className="web-api-segment" role="radiogroup" aria-label={t('webApi.listenScope')}><button type="button" role="radio" aria-checked={!webApiConfig.allowRemote} className={!webApiConfig.allowRemote ? 'selected' : ''} onClick={() => setWebApiConfig({ ...webApiConfig, allowRemote: false })}>{t('webApi.localOnly')}</button><button type="button" role="radio" aria-checked={webApiConfig.allowRemote} className={webApiConfig.allowRemote ? 'selected' : ''} onClick={() => setWebApiConfig({ ...webApiConfig, allowRemote: true })}>{t('webApi.network')}</button></div></div><label className="web-api-field"><strong>{t('webApi.port')}</strong><input type="number" min="1" max="65535" value={webApiConfig.port} onChange={(event) => setWebApiConfig({ ...webApiConfig, port: Number(event.target.value) })} /></label></div>
+            <div className="web-api-address"><span>{t('webApi.address')}</span><code>{`http://${webApiConfig.allowRemote ? `<${t('webApi.hostPlaceholder')}>` : '127.0.0.1'}:${webApiConfig.port}/api/v1`}</code></div>
+          </>}
+        </section>
+        {webApiConfig.enabled && <section className="web-api-card web-api-token-card"><div className="web-api-card-heading"><div><strong>{t('webApi.token')}</strong><small>{t('webApi.tokenHint')}</small></div></div>{webApiStatus?.token ? <div className="web-api-token-actions"><code aria-label={t('webApi.token')}>••••••••••••••••••••••••</code><button type="button" className="secondary-button" onClick={() => void window.api.system.writeClipboard(webApiStatus.token ?? '').then(() => onNotice(t('webApi.copied'))).catch((error) => onError(errorMessage(error)))}><Copy size={14} />{t('common.copy')}</button><button type="button" className="text-button" onClick={() => void regenerateWebApiToken()}>{t('webApi.regenerateToken')}</button></div> : <p className="web-api-token-pending">{t('webApi.tokenPending')}</p>}</section>}
+        <button type="button" className="secondary-button web-api-reference-open" onClick={() => setWebApiReferenceOpen(true)}><FileJson2 size={15} />{t('webApi.viewEndpoints')}</button>
+      </> : <p>{t('webApi.loading')}</p>}
     </div> : <>
       <div className="terminal-preview" style={terminalBackgroundStyle(form, previewImage)}><div style={{ color: form.foregroundColor, background: colorWithOpacity(form.backgroundColor, form.backgroundOpacity), fontFamily: form.fontFamily, fontSize: form.fontSize }}><span>user@host:~$</span> ls -la<br />drwxr-xr-x&nbsp;&nbsp;projects</div></div>
       <label>{t('app.font')}<div className={`terminal-font-picker ${fontChoice === '__manual__' ? 'manual' : ''}`}><select value={fontChoice} onChange={(event) => { const value = event.target.value; if (value === '__manual__') { setManualFontMode(true); setManualFontName(currentFontName); return } setManualFontMode(false); if (value === '__bundled__') { set('fontFamily', BUNDLED_TERMINAL_FONT); setManualFontName('JetBrains Mono'); return } if (value === '__system__') { set('fontFamily', 'monospace'); setManualFontName('monospace'); return } set('fontFamily', terminalFontStack(value)); setManualFontName(value) }}><option value="__bundled__">JetBrains Mono {t('app.bundled')}</option><option value="__system__">{t('app.systemMonospace')}</option>{systemFonts === null && !['JetBrains Mono', 'monospace'].includes(currentFontName) && <option value="__current__">{currentFontName} {t('app.current')}</option>}{installedFonts.map((font) => <option key={font} value={font}>{font}</option>)}<option value="__manual__">{t('app.enterAnotherFont')}</option></select>{fontChoice === '__manual__' && <input autoFocus value={manualFontName} placeholder={t('app.fontName')} onChange={(event) => { const value = event.target.value; setManualFontName(value); if (value.trim()) set('fontFamily', terminalFontStack(value)) }} />}</div></label>
@@ -1132,8 +1705,30 @@ function SettingsDialog({ initialSection, settings, backgroundImage, appIcons, u
       <label>{t('app.imageFit')}<select value={form.backgroundImageFit} onChange={(event) => set('backgroundImageFit', event.target.value as TerminalSettings['backgroundImageFit'])}><option value="cover">{t('app.cover')}</option><option value="contain">{t('app.contain')}</option><option value="stretch">{t('app.stretch')}</option><option value="tile">{t('app.tile')}</option></select></label>
     </>}
     </div>
-    <div className={`dialog-actions ${section === 'about' ? '' : 'spread'}`}>{section !== 'about' && <button type="button" className="secondary-button" onClick={reset}><RotateCcw size={15} />{t('app.restoreDefaults')}</button>}<div><button type="button" className="secondary-button" onClick={onClose}>{section === 'about' ? t('common.close') : t('common.cancel')}</button>{section !== 'about' && <button className="primary-button" type="submit">{t('common.save')}</button>}</div></div>
-  </form></Modal>
+    <div className="dialog-actions"><button type="button" className="secondary-button" onClick={onClose}>{section === 'about' ? t('common.close') : t('common.cancel')}</button>{section === 'webApi' ? <button className="primary-button" type="button" disabled={!webApiConfig || savingWebApi} onClick={() => void saveWebApi()}>{t('common.save')}</button> : section !== 'about' && <button className="primary-button" type="submit">{t('common.save')}</button>}</div>
+  </form></Modal>{webApiReferenceOpen && webApiStatus && <WebApiReferenceDialog config={webApiStatus.config} chinese={language.startsWith('zh')} onClose={() => setWebApiReferenceOpen(false)} onNotice={onNotice} onError={onError} />}</>
+}
+
+function WebApiReferenceDialog({ config, chinese, onClose, onNotice, onError }: { config: WebApiConfig; chinese: boolean; onClose(): void; onNotice(message: string): void; onError(message: string): void }): React.JSX.Element {
+  const { t } = useI18n()
+  const [expanded, setExpanded] = useState('')
+  const baseUrl = `http://${config.allowRemote ? '<host-ip>' : '127.0.0.1'}:${config.port}/api/v1`
+  const copy = async (value: string): Promise<void> => {
+    try { await window.api.system.writeClipboard(value); onNotice(t('webApi.referenceCopied')) }
+    catch (error) { onError(errorMessage(error)) }
+  }
+  return <Modal title={t('webApi.endpointList')} onClose={onClose} wide raised className="web-api-reference-dialog"><div className="web-api-reference-content">
+    <div className="web-api-reference-top"><div><span>Base URL</span><code>{baseUrl}</code></div><button type="button" className="secondary-button" onClick={() => void copy(formatWebApiReference(baseUrl, chinese))}><Copy size={14} />{t('webApi.copyAllEndpoints')}</button></div>
+    <p className="web-api-reference-auth">Authorization: Bearer &lt;token&gt; <span>·</span> {t('webApi.referenceErrorFormat')}</p>
+    <div className="web-api-reference-list">{webApiEndpoints.map((endpoint) => {
+      const key = `${endpoint.method} ${endpoint.path}`
+      const open = expanded === key
+      return <article key={key} className={open ? 'expanded' : ''}><div className="web-api-reference-row"><button type="button" className="web-api-reference-toggle" aria-expanded={open} onClick={() => setExpanded(open ? '' : key)}><span className={`web-api-method ${endpoint.method.toLowerCase()}`}>{endpoint.method}</span><code>{endpoint.path}</code><span className="web-api-reference-description">{chinese ? endpoint.descriptionZh : endpoint.descriptionEn}</span>{open ? <ChevronDown size={15} /> : <ChevronRight size={15} />}</button><button type="button" className="icon-button" title={t('webApi.copyEndpoint')} aria-label={`${t('webApi.copyEndpoint')} ${endpoint.method} ${endpoint.path}`} onClick={() => void copy(formatWebApiEndpoint(endpoint, chinese, baseUrl))}><Copy size={14} /></button></div>
+        {open && <div className="web-api-reference-detail"><section><strong>{t('webApi.requestFormat')}</strong><pre>{endpoint.request}</pre></section><section><strong>{t('webApi.responseFormat')}</strong><pre>{endpoint.response}</pre></section>{endpoint.types && <section><strong>{t('webApi.fieldTypes')}</strong><pre>{endpoint.types}</pre></section>}{(chinese ? endpoint.noteZh : endpoint.noteEn) && <p>{chinese ? endpoint.noteZh : endpoint.noteEn}</p>}</div>}
+      </article>
+    })}</div>
+    <div className="dialog-actions"><button type="button" className="primary-button" onClick={onClose}>{t('common.close')}</button></div>
+  </div></Modal>
 }
 
 function GroupNameDialog({ mode, initialName, onClose, onSave }: { mode: 'create' | 'rename'; initialName: string; onClose(): void; onSave(name: string): void }): React.JSX.Element {
@@ -1206,9 +1801,9 @@ function ConflictDialog({ conflict, onDecision }: { conflict: { sourcePath: stri
   return <Modal title={t('app.aFileWithThisNameAlreadyExists')} onClose={() => onDecision('skip', false)}><div className="dialog-copy"><p className="path-line">{conflict.destinationPath}</p><label className="check-label"><input type="checkbox" checked={apply} onChange={(event) => setApply(event.target.checked)} />{t('app.applyToAllConflictsInThisBatch')}</label><div className="dialog-actions spread"><button className="secondary-button" onClick={() => onDecision('skip', apply)}>{t('app.skip')}</button><button className="secondary-button" onClick={() => onDecision('rename', apply)}>{t('app.rename')}</button><button className="danger-button" onClick={() => onDecision('overwrite', apply)}>{t('app.overwrite')}</button></div></div></Modal>
 }
 
-function Modal({ title, onClose, children, wide = false, raised = false, className = '' }: { title: string; onClose(): void; children: React.ReactNode; wide?: boolean; raised?: boolean; className?: string }): React.JSX.Element {
+function Modal({ title, onClose, children, wide = false, raised = false, className = '', suppressContextMenu = false }: { title: string; onClose(): void; children: React.ReactNode; wide?: boolean; raised?: boolean; className?: string; suppressContextMenu?: boolean }): React.JSX.Element {
   const { t } = useI18n()
-  return <div className={`modal-backdrop ${raised ? 'raised' : ''}`} onMouseDown={(event) => { if (event.target === event.currentTarget) onClose() }}><section className={`modal ${wide ? 'wide' : ''} ${className}`} role="dialog" aria-modal="true"><header><strong>{title}</strong><button className="icon-button" title={t('common.close')} aria-label={t('common.close')} onClick={onClose}><X size={18} /></button></header>{children}</section></div>
+  return <div className={`modal-backdrop ${raised ? 'raised' : ''}`} onMouseDown={(event) => { if (event.target === event.currentTarget) onClose() }}><section className={`modal ${wide ? 'wide' : ''} ${className}`} role="dialog" aria-modal="true" onContextMenu={suppressContextMenu ? (event) => event.preventDefault() : undefined}><header><strong>{title}</strong><button className="icon-button" title={t('common.close')} aria-label={t('common.close')} onClick={onClose}><X size={18} /></button></header>{children}</section></div>
 }
 
 function ConfirmationDialog({ confirmation, onDecision }: { confirmation: ConfirmationOptions; onDecision(accepted: boolean): void }): React.JSX.Element {
@@ -1229,7 +1824,7 @@ function TransferPanel({ transfers, view, setView, onRetry, onCancel, onClear }:
   const speed = active.reduce((sum, item) => sum + item.speed, 0)
   const eta = speed > 0 && totalBytes > transferredBytes ? Math.ceil((totalBytes - transferredBytes) / speed) : 0
   const speedText = speed >= 1024 * 1024 ? `${(speed / 1024 / 1024).toFixed(1)} MB/s` : `${Math.round(speed / 1024)} KB/s`
-  return <section className="transfer-panel"><header><div className="transfer-tabs"><button className={view === 'queue' ? 'active' : ''} onClick={() => setView('queue')}>{t('app.queue')} <span>{active.length}</span></button><button className={view === 'history' ? 'active' : ''} onClick={() => setView('history')}>{t('app.history')}</button></div>{active.length > 0 && <div className="transfer-summary"><strong>{totalBytes ? Math.round(transferredBytes / totalBytes * 100) : 0}%</strong><span>{speedText}</span>{eta > 0 && <span>{eta >= 60 ? t('app.transferEtaMinutes', { value: Math.ceil(eta / 60) }) : t('app.transferEtaSeconds', { value: eta })}</span>}</div>}<button className="text-button" onClick={onClear}>{t('app.clearCompleted')}</button></header>
+  return <section className="transfer-panel"><header><div className="transfer-tabs"><button className={view === 'queue' ? 'active' : ''} onClick={() => setView('queue')}>{t('app.queue')} <span>{active.length}</span></button><button className={view === 'history' ? 'active' : ''} onClick={() => setView('history')}>{t('app.history')}</button></div>{active.length > 0 && <div className="transfer-summary"><strong>{totalBytes ? Math.round(transferredBytes / totalBytes * 100) : 0}%</strong><span>{speedText}</span>{eta > 0 && <span>{eta >= 60 ? t('app.transferEtaMinutes', { value: Math.ceil(eta / 60) }) : t('app.transferEtaSeconds', { value: eta })}</span>}</div>}<button className="text-button" disabled={!transfers.some((item) => ['completed', 'failed', 'cancelled', 'interrupted'].includes(item.status))} onClick={onClear}>{t('app.clearTransferHistory')}</button></header>
     <div className="transfer-list">{shown.length === 0 ? <div className="transfer-empty">{view === 'queue' ? t('app.noActiveTransfers') : t('app.noTransferHistory')}</div> : shown.slice(0, 40).map((task) => {
       const percent = task.bytesTotal ? Math.min(100, Math.round(task.bytesTransferred / task.bytesTotal * 100)) : 0
       return <div className="transfer-row" key={task.id}><span className={`transfer-direction ${task.direction}`}>{task.direction === 'upload' ? '↑' : '↓'}</span><div className="transfer-info"><strong>{task.displayName}</strong><small>{task.error ?? `${task.sourcePath} → ${task.destinationPath}`}</small>{['running', 'scanning'].includes(task.status) && <div className="progress"><span style={{ width: `${percent}%` }} /></div>}</div><span className={`transfer-status ${task.status}`}>{task.status === 'running' ? `${percent}%` : ({ queued: t('app.queued'), scanning: t('app.scanning'), conflict: t('app.waiting'), completed: t('app.completed'), failed: t('app.failed'), cancelled: t('app.cancelled'), interrupted: t('app.interrupted') } as Record<string, string>)[task.status]}</span><div className="transfer-actions">{activeStatuses.includes(task.status) && <button className="icon-button" title={t('common.cancel')} onClick={() => onCancel(task)}><X size={15} /></button>}{['failed', 'cancelled', 'interrupted'].includes(task.status) && <button className="text-button" onClick={() => onRetry(task)}>{t('app.retry')}</button>}</div></div>

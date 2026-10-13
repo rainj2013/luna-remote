@@ -145,6 +145,8 @@ pub struct ConnectInput {
     pub jump_credential: Option<String>,
     #[serde(default)]
     pub remember_jump_credential: bool,
+    #[serde(default)]
+    pub non_interactive: bool,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -240,6 +242,8 @@ pub struct AiGenerateRequest {
     pub terminal_context: Option<String>,
     #[serde(default)]
     pub redact_terminal_context: bool,
+    #[serde(default)]
+    pub allow_multiline: bool,
 }
 
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -590,28 +594,172 @@ pub struct DeploymentProfile {
     pub id: String,
     pub bookmark_id: String,
     pub name: String,
-    pub local_directory: String,
+    #[serde(default, alias = "localDirectory")]
+    pub workspace: String,
+    #[serde(default)]
+    pub selection: DeploymentSelection,
     pub remote_directory: String,
-    pub delete_extraneous: bool,
+    #[serde(default)]
+    pub archive_enabled: bool,
+    #[serde(default)]
+    pub archive_format: ArchiveFormat,
+    #[serde(default)]
+    pub shell_template: String,
+    #[serde(default)]
+    pub shell: DeploymentShell,
+    #[serde(default)]
+    pub confirm_manual: bool,
+    #[serde(default)]
+    pub schedule: DeploymentSchedule,
+    #[serde(default)]
+    pub hook_url: String,
+    #[serde(default, alias = "hookFormat")]
+    pub hook_template: Option<DeploymentHookTemplate>,
+    #[serde(default)]
+    pub hook_body: String,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum DeploymentHookTemplate {
+    #[default]
+    #[serde(alias = "json")]
+    Custom,
+    Feishu,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum DeploymentShell {
+    #[default]
+    #[serde(alias = "sh")]
+    Bash,
+}
+
+impl DeploymentShell {
+    pub fn executable(self) -> &'static str {
+        "bash"
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum ArchiveFormat {
+    #[default]
+    Zip,
+    TarGz,
+}
+
+impl ArchiveFormat {
+    pub fn extension(self) -> &'static str {
+        match self {
+            Self::Zip => "zip",
+            Self::TarGz => "tar.gz",
+        }
+    }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct DeploymentDiffEntry {
-    pub relative_path: String,
-    pub local_path: Option<String>,
-    pub remote_path: String,
-    pub status: DeploymentDiffStatus,
-    pub size: Option<u64>,
+pub struct DeploymentSelection {
+    #[serde(default = "legacy_deployment_included")]
+    pub included: Vec<String>,
+    #[serde(default)]
+    pub excluded: Vec<String>,
+}
+
+fn legacy_deployment_included() -> Vec<String> {
+    vec![".".into()]
+}
+
+impl Default for DeploymentSelection {
+    fn default() -> Self {
+        Self {
+            included: legacy_deployment_included(),
+            excluded: vec![],
+        }
+    }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
-pub enum DeploymentDiffStatus {
-    New,
-    Changed,
-    Same,
-    RemoteOnly,
+#[serde(rename_all = "camelCase")]
+pub struct DeploymentSchedule {
+    pub enabled: bool,
+    pub daily_time: String,
+}
+
+impl Default for DeploymentSchedule {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            daily_time: "09:00".into(),
+        }
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DeploymentFile {
+    pub relative_path: String,
+    pub size: u64,
+    pub sha256: String,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DeploymentPreview {
+    pub files: Vec<DeploymentFile>,
+    pub total_size: u64,
+    pub remote_target_directory: String,
+    pub archive_file_name: Option<String>,
+    pub command_template: String,
+    pub command_preview: String,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DeploymentPreviewProgress {
+    pub request_id: String,
+    pub phase: String,
+    pub files_total: usize,
+    pub files_processed: usize,
+    pub bytes_total: u64,
+    pub bytes_processed: u64,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DeploymentProgress {
+    pub request_id: String,
+    pub phase: String,
+    pub bytes_total: u64,
+    pub bytes_processed: u64,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DeploymentRun {
+    pub id: String,
+    pub deployment_id: String,
+    pub bookmark_id: String,
+    pub trigger_type: String,
+    pub started_at: String,
+    pub finished_at: Option<String>,
+    pub status: String,
+    pub selected_file_count: usize,
+    pub archive_enabled: bool,
+    pub archive_size: Option<u64>,
+    pub manifest_sha256: Option<String>,
+    pub remote_destination_dir: String,
+    pub command_exit_code: Option<u32>,
+    pub stdout: String,
+    pub stderr: String,
+    pub error: Option<String>,
+    pub manifest: Option<String>,
+    #[serde(default)]
+    pub command_line: String,
+    #[serde(default)]
+    pub hook_error: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
@@ -672,6 +820,8 @@ pub enum AppEvent {
     Transfer(TransferTask),
     Tunnel(TunnelSummary),
     TransferConflict(TransferConflict),
+    DeploymentPreviewProgress(DeploymentPreviewProgress),
+    DeploymentProgress(DeploymentProgress),
     MenuCommand(MenuCommand),
 }
 

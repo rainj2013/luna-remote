@@ -1,6 +1,6 @@
 [package]
 name = "luna-remote"
-version = "1.1.0"
+version = "1.2.0"
 description = "Tauri desktop shell for Luna Remote"
 license = "MIT"
 edition = "2024"
@@ -16,10 +16,12 @@ tauri-build = { version = "2", features = [] }
 anyhow = "1"
 async-trait = "0.1"
 async-recursion = "1"
+axum = "0.8"
 base64 = "0.22"
 chrono = { version = "0.4", features = ["serde"] }
 dirs = "6"
 fast-socks5 = "0.10"
+flate2 = "1"
 futures = "0.3"
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "webp", "bmp", "gif"] }
 keyring = { version = "3", features = ["apple-native", "windows-native"] }
@@ -35,12 +37,14 @@ tauri = { version = "2", features = ["macos-private-api", "image-png", "image-ic
 tauri-plugin-clipboard-manager = "2"
 tauri-plugin-dialog = "2"
 tauri-plugin-opener = "2"
+tar = "0.4"
 thiserror = "2"
 tokio = { version = "1", features = ["fs", "io-util", "macros", "net", "rt-multi-thread", "sync", "time"] }
 tokio-util = { version = "0.7", features = ["io"] }
 uuid = { version = "1", features = ["v4", "serde"] }
 url = "2"
 walkdir = "2"
+zip = { version = "0.6", default-features = false, features = ["deflate"] }
 zeroize = "1"
 fontdb = { version = "0.23.0", default-features = false, features = ["std", "fs"] }
 

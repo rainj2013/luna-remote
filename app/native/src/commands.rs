@@ -28,6 +28,8 @@ pub struct AppState {
     pub db: Arc<Database>,
     pub sessions: Arc<SessionManager>,
     pub transfers: Arc<TransferManager>,
+    pub deployments: Arc<crate::deployment::DeploymentManager>,
+    pub web_api: Arc<crate::web_api::WebApiManager>,
     pub tunnels: Arc<TunnelManager>,
     pub ai_diagnostics: ai::AiDiagnostics,
     pub allowed_imports: Mutex<HashSet<PathBuf>>,
@@ -1072,215 +1074,6 @@ pub async fn settings_set_app_icon(
     Ok(icon)
 }
 
-fn deployments(state: &AppState) -> Vec<DeploymentProfile> {
-    state.db.get_setting("deploymentProfiles", vec![])
-}
-#[tauri::command]
-pub fn deployments_list(state: State<AppState>, bookmark_id: String) -> Vec<DeploymentProfile> {
-    deployments(&state)
-        .into_iter()
-        .filter(|item| item.bookmark_id == bookmark_id)
-        .collect()
-}
-#[tauri::command]
-pub fn deployments_save(
-    state: State<AppState>,
-    mut profile: DeploymentProfile,
-) -> Result<DeploymentProfile, String> {
-    if state.db.get_bookmark(&profile.bookmark_id)?.is_none() {
-        return Err("连接不存在".into());
-    }
-    if profile.id.is_empty() {
-        profile.id = Uuid::new_v4().to_string();
-    }
-    profile.name = profile.name.trim().into();
-    profile.local_directory = profile.local_directory.trim().into();
-    profile.remote_directory = profile
-        .remote_directory
-        .trim()
-        .trim_end_matches('/')
-        .to_string();
-    if profile.remote_directory.is_empty() {
-        profile.remote_directory = "/".into();
-    }
-    if profile.name.is_empty()
-        || profile.local_directory.is_empty()
-        || !profile.remote_directory.starts_with('/')
-    {
-        return Err("部署名称、本地目录和远端绝对路径不能为空".into());
-    }
-    let mut items = deployments(&state);
-    items.retain(|item| item.id != profile.id);
-    items.insert(0, profile.clone());
-    state.db.set_setting("deploymentProfiles", &items)?;
-    Ok(profile)
-}
-#[tauri::command]
-pub fn deployments_remove(state: State<AppState>, id: String) -> Result<(), String> {
-    let mut items = deployments(&state);
-    items.retain(|item| item.id != id);
-    state.db.set_setting("deploymentProfiles", &items)
-}
-
-async fn deployment_diff(
-    state: &AppState,
-    profile: &DeploymentProfile,
-    session_id: &str,
-) -> Result<Vec<DeploymentDiffEntry>, String> {
-    if state.sessions.bookmark_id(session_id)? != profile.bookmark_id {
-        return Err("部署配置与当前连接不匹配".into());
-    }
-    let root = PathBuf::from(&profile.local_directory);
-    if !root.is_dir() {
-        return Err("本地部署目录不存在".into());
-    }
-    let mut local = HashMap::<String, (String, u64, i64)>::new();
-    for entry in walkdir::WalkDir::new(&root).follow_links(false) {
-        let entry = entry.map_err(|e| e.to_string())?;
-        if entry.file_type().is_symlink() {
-            return Err(format!("暂不支持部署符号链接：{}", entry.path().display()));
-        }
-        if !entry.file_type().is_file() {
-            continue;
-        }
-        let metadata = entry.metadata().map_err(|e| e.to_string())?;
-        let relative = entry
-            .path()
-            .strip_prefix(&root)
-            .map_err(|e| e.to_string())?
-            .to_string_lossy()
-            .replace('\\', "/");
-        let modified = metadata
-            .modified()
-            .ok()
-            .and_then(|value| value.duration_since(UNIX_EPOCH).ok())
-            .map(|value| value.as_millis() as i64)
-            .unwrap_or(0);
-        local.insert(
-            relative,
-            (
-                entry.path().to_string_lossy().into_owned(),
-                metadata.len(),
-                modified,
-            ),
-        );
-    }
-    let mut remote = state
-        .sessions
-        .remote_tree(session_id, &profile.remote_directory)
-        .await?;
-    let mut result = Vec::new();
-    for (relative, (path, size, modified)) in local {
-        let remote_entry = remote.remove(&relative);
-        let remote_path = if profile.remote_directory == "/" {
-            format!("/{relative}")
-        } else {
-            format!("{}/{relative}", profile.remote_directory)
-        };
-        let same = remote_entry.as_ref().is_some_and(|entry| {
-            entry.size == Some(size)
-                && entry
-                    .modified_at
-                    .is_some_and(|value| (value - modified).abs() <= 2000)
-        });
-        result.push(DeploymentDiffEntry {
-            relative_path: relative,
-            local_path: Some(path),
-            remote_path,
-            status: if remote_entry.is_none() {
-                DeploymentDiffStatus::New
-            } else if same {
-                DeploymentDiffStatus::Same
-            } else {
-                DeploymentDiffStatus::Changed
-            },
-            size: Some(size),
-        });
-    }
-    for (relative, entry) in remote {
-        result.push(DeploymentDiffEntry {
-            relative_path: relative,
-            local_path: None,
-            remote_path: entry.path,
-            status: DeploymentDiffStatus::RemoteOnly,
-            size: entry.size,
-        });
-    }
-    result.sort_by(|a, b| a.relative_path.cmp(&b.relative_path));
-    Ok(result)
-}
-#[tauri::command]
-pub async fn deployments_preview(
-    state: State<'_, AppState>,
-    id: String,
-    session_id: String,
-) -> Result<Vec<DeploymentDiffEntry>, String> {
-    let profile = deployments(&state)
-        .into_iter()
-        .find(|item| item.id == id)
-        .ok_or_else(|| "部署配置不存在".to_string())?;
-    deployment_diff(&state, &profile, &session_id).await
-}
-#[tauri::command]
-pub async fn deployments_execute(
-    state: State<'_, AppState>,
-    id: String,
-    session_id: String,
-) -> Result<Vec<TransferTask>, String> {
-    let profile = deployments(&state)
-        .into_iter()
-        .find(|item| item.id == id)
-        .ok_or_else(|| "部署配置不存在".to_string())?;
-    let diff = deployment_diff(&state, &profile, &session_id).await?;
-    let mut groups = HashMap::<String, Vec<String>>::new();
-    for entry in &diff {
-        if entry.local_path.is_none()
-            || !matches!(
-                entry.status,
-                DeploymentDiffStatus::New | DeploymentDiffStatus::Changed
-            )
-        {
-            continue;
-        }
-        let parent = entry
-            .remote_path
-            .rsplit_once('/')
-            .map(|value| if value.0.is_empty() { "/" } else { value.0 })
-            .unwrap_or(".")
-            .to_string();
-        groups
-            .entry(parent)
-            .or_default()
-            .push(entry.local_path.clone().unwrap());
-    }
-    let mut tasks = Vec::new();
-    for (destination_directory, source_paths) in groups {
-        tasks.extend(state.transfers.enqueue(TransferRequest {
-            session_id: session_id.clone(),
-            direction: TransferDirection::Upload,
-            source_paths,
-            destination_directory,
-        })?);
-    }
-    let extraneous = diff
-        .into_iter()
-        .filter(|entry| matches!(entry.status, DeploymentDiffStatus::RemoteOnly))
-        .map(|entry| entry.remote_path)
-        .collect::<Vec<_>>();
-    if profile.delete_extraneous && !extraneous.is_empty() {
-        let manager = state.transfers.clone();
-        let sessions = state.sessions.clone();
-        let ids = tasks.iter().map(|task| task.id.clone()).collect::<Vec<_>>();
-        let session = session_id.clone();
-        tauri::async_runtime::spawn(async move {
-            if manager.when_settled(&ids).await {
-                let _ = sessions.remove_remote(&session, extraneous).await;
-            }
-        });
-    }
-    Ok(tasks)
-}
-
 fn profiles(state: &AppState) -> Vec<PortForwardProfile> {
     state.db.get_setting("portForwardProfiles", vec![])
 }
@@ -1409,8 +1202,8 @@ pub fn transfers_resolve_conflict(
         .resolve_conflict(&id, resolution, apply_to_batch)
 }
 #[tauri::command]
-pub fn transfers_clear_completed(state: State<AppState>) -> Result<(), String> {
-    state.transfers.clear_completed()
+pub fn transfers_clear_history(state: State<AppState>) -> Result<Vec<String>, String> {
+    state.transfers.clear_history()
 }
 
 #[tauri::command]

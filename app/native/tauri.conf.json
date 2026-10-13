@@ -1,11 +1,11 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "Luna Remote",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "identifier": "com.local.lunaremote",
   "build": {
     "beforeDevCommand": "npm run web:dev",
-    "devUrl": "http://127.0.0.1:1420",
+    "devUrl": "http://127.0.0.1:1430",
     "beforeBuildCommand": "npm run web:build",
     "frontendDist": "../frontend/dist"
   },
@@ -25,7 +25,7 @@
         "dragDropEnabled": true
       }
     ],
-    "security": { "csp": "default-src 'self'; img-src 'self' asset: data: blob:; font-src 'self' data:; style-src 'self' 'unsafe-inline'; connect-src 'self' ipc: http://ipc.localhost ws://localhost:1420 ws://127.0.0.1:1420; script-src 'self'; object-src 'none'; frame-src 'none'; base-uri 'none'" }
+    "security": { "csp": "default-src 'self'; img-src 'self' asset: data: blob:; font-src 'self' data:; style-src 'self' 'unsafe-inline'; connect-src 'self' ipc: http://ipc.localhost ws://localhost:1430 ws://127.0.0.1:1430; script-src 'self'; object-src 'none'; frame-src 'none'; base-uri 'none'" }
   },
   "bundle": {
     "active": true,

@@ -180,8 +180,10 @@ impl TransferManager {
         Ok(())
     }
 
-    pub fn clear_completed(&self) -> Result<(), String> {
-        self.db.clear_completed()
+    pub fn clear_history(&self) -> Result<Vec<String>, String> {
+        let tasks = self.tasks.lock().map_err(|_| "传输状态锁已损坏".to_string())?;
+        let active_ids = tasks.keys().cloned().collect();
+        self.db.clear_transfer_history(&active_ids)
     }
 
     pub fn resolve_conflict(&self, id: &str, resolution: ConflictResolution, apply_to_batch: bool) {
@@ -191,35 +193,6 @@ impl TransferManager {
         }
         if let Some(prompt) = prompt {
             self.emit_conflict(prompt);
-        }
-    }
-
-    pub async fn when_settled(&self, ids: &[String]) -> bool {
-        loop {
-            let Ok(tasks) = self.db.list_transfers() else {
-                return false;
-            };
-            let selected: Vec<_> = tasks
-                .into_iter()
-                .filter(|task| ids.contains(&task.id))
-                .collect();
-            if selected.len() != ids.len() {
-                return false;
-            }
-            if selected.iter().all(|task| {
-                !matches!(
-                    task.status,
-                    TransferStatus::Queued
-                        | TransferStatus::Scanning
-                        | TransferStatus::Running
-                        | TransferStatus::Conflict
-                )
-            }) {
-                return selected
-                    .iter()
-                    .all(|task| task.status == TransferStatus::Completed);
-            }
-            tokio::time::sleep(Duration::from_millis(250)).await;
         }
     }
 

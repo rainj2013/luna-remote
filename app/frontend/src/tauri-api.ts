@@ -4,7 +4,7 @@ import { listen } from '@tauri-apps/api/event'
 import { getCurrentWebview } from '@tauri-apps/api/webview'
 import { getCurrentWindow } from '@tauri-apps/api/window'
 import { readText, writeText } from '@tauri-apps/plugin-clipboard-manager'
-import type { AiSettingsInput, AiShell, AppApi, AppEvent, AppIconId, AppLanguage, BookmarkInput, ConnectInput, ConflictResolution, DeploymentProfile, NativeMenuLabels, Platform, PortForwardProfile, TerminalSettings, TransferRequest, UiTheme } from './types'
+import type { AiSettingsInput, AiShell, AppApi, AppEvent, AppIconId, AppLanguage, BookmarkInput, ConnectInput, ConflictResolution, DeploymentProfile, NativeMenuLabels, Platform, PortForwardProfile, TerminalSettings, TransferRequest, UiTheme, WebApiConfig } from './types'
 
 const call = <T>(command: string, args?: Record<string, unknown>): Promise<T> => invoke<T>(command, args).catch((error) => {
   throw new Error(typeof error === 'string' ? error : String(error))
@@ -87,15 +87,29 @@ export async function createTauriApi(): Promise<AppApi> {
       enqueue: (request: TransferRequest) => call('transfers_enqueue', { request }),
       cancel: (id) => call('transfers_cancel', { id }),
       retry: (id, sessionId) => call('transfers_retry', { id, sessionId }),
-      clearCompleted: () => call('transfers_clear_completed'),
+      clearHistory: () => call<string[]>('transfers_clear_history'),
       resolveConflict: (id, resolution: ConflictResolution, applyToBatch) => send('transfers_resolve_conflict', { id, resolution, applyToBatch })
     },
     deployments: {
       list: (bookmarkId) => call('deployments_list', { bookmarkId }),
       save: (profile: DeploymentProfile) => call('deployments_save', { profile }),
       remove: (id) => call('deployments_remove', { id }),
-      preview: (id, sessionId) => call('deployments_preview', { id, sessionId }),
-      execute: (id, sessionId) => call('deployments_execute', { id, sessionId })
+      exportBundle: (bookmarkId) => call('deployments_export_bundle', { bookmarkId }),
+      pickBundle: () => call('deployments_pick_bundle'),
+      importBundle: (bookmarkId, tasks) => call('deployments_import_bundle', { bookmarkId, tasks }),
+      tree: (workspace, path) => call('deployments_tree', { workspace, path }),
+      preview: (profile, requestId) => call('deployments_preview', { profile, requestId }),
+      execute: (id, sessionId, archiveFileName, requestId) => call('deployments_execute', { id, sessionId, archiveFileName, requestId }),
+      confirm: (runId) => call('deployments_confirm', { runId }),
+      cancel: (runId) => call('deployments_cancel', { runId }),
+      runsList: (deploymentId) => call('deployment_runs_list', { deploymentId }),
+      runGet: (id) => call('deployment_run_get', { id }),
+      runsRemove: (ids) => call('deployment_run_remove', { ids })
+    },
+    webApi: {
+      get: () => call('web_api_get'),
+      save: (config: WebApiConfig) => call('web_api_save', { config }),
+      regenerateToken: () => call('web_api_regenerate_token')
     },
     tunnels: {
       listProfiles: (bookmarkId) => call('tunnels_list_profiles', { bookmarkId }),
@@ -111,7 +125,7 @@ export async function createTauriApi(): Promise<AppApi> {
       saveSettings: (settings: AiSettingsInput) => call('ai_settings_save', { settings }),
       deleteApiKey: () => call('ai_settings_delete_key'),
       testSettings: (settings: AiSettingsInput) => call('ai_settings_test', { settings }),
-      generate: (requirement, shell: AiShell, terminalContext, redactTerminalContext) => call('ai_command_generate', { request: { requirement, shell, terminalContext, redactTerminalContext } }),
+      generate: (requirement, shell: AiShell, terminalContext, redactTerminalContext, allowMultiline) => call('ai_command_generate', { request: { requirement, shell, terminalContext, redactTerminalContext, allowMultiline } }),
       analyze: (command) => call('ai_command_analyze', { command }),
       listHistory: () => call('ai_command_history_list'),
       clearHistory: () => call('ai_command_history_clear'),

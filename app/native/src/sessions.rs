@@ -31,6 +31,10 @@ impl<T: AsyncRead + AsyncWrite + Unpin + Send> AsyncTransport for T {}
 type Transport = Pin<Box<dyn AsyncTransport>>;
 
 const REMOTE_EXEC_TIMEOUT: Duration = Duration::from_secs(12);
+const REMOTE_LIST_EXEC_TIMEOUT: Duration = Duration::from_secs(6);
+const REMOTE_REMOVE_EXEC_TIMEOUT: Duration = Duration::from_secs(600);
+const REMOTE_SFTP_OPEN_TIMEOUT: Duration = Duration::from_secs(15);
+const REMOTE_SFTP_LIST_TIMEOUT: Duration = Duration::from_secs(30);
 const REMOTE_EXEC_OUTPUT_LIMIT: usize = 16 * 1024 * 1024;
 const DEFAULT_TERMINAL_SIZE: (u32, u32) = (100, 30);
 const REMOTE_LIST_MODE_UNKNOWN: u8 = 0;
@@ -47,14 +51,22 @@ try:
 except (AttributeError,UnicodeDecodeError):
  path=raw_path
 items=[]
-for name in os.listdir(path):
- full_path=os.path.join(path,name)
- try:
-  info=os.lstat(full_path)
-  kind='symlink' if stat.S_ISLNK(info.st_mode) else 'directory' if stat.S_ISDIR(info.st_mode) else 'file' if stat.S_ISREG(info.st_mode) else 'other'
- except OSError:
-  kind='other'
- items.append({'name':name,'path':full_path,'kind':kind})
+if hasattr(os,'scandir'):
+ for entry in os.scandir(path):
+  try:
+   kind='symlink' if entry.is_symlink() else 'directory' if entry.is_dir(follow_symlinks=False) else 'file' if entry.is_file(follow_symlinks=False) else 'other'
+  except OSError:
+   kind='other'
+  items.append({'name':entry.name,'path':os.path.join(path,entry.name),'kind':kind})
+else:
+ for name in os.listdir(path):
+  full_path=os.path.join(path,name)
+  try:
+   info=os.lstat(full_path)
+   kind='symlink' if stat.S_ISLNK(info.st_mode) else 'directory' if stat.S_ISDIR(info.st_mode) else 'file' if stat.S_ISREG(info.st_mode) else 'other'
+  except OSError:
+   kind='other'
+  items.append({'name':name,'path':full_path,'kind':kind})
 json_text=json.dumps(items,separators=(',',':'),ensure_ascii=False)
 try:
  json_bytes=json_text.encode('utf-8','replace')
@@ -81,6 +93,7 @@ struct ClientHandler {
     db: Arc<Database>,
     decisions: Arc<StdMutex<HashMap<String, oneshot::Sender<bool>>>>,
     forwarded_routes: ForwardedRoutes,
+    non_interactive: bool,
 }
 
 type ForwardedRoutes =
@@ -97,6 +110,9 @@ impl client::Handler for ClientHandler {
             .map_err(|error| anyhow!(error))?;
         if known.as_deref() == Some(&fingerprint) {
             return Ok(true);
+        }
+        if self.non_interactive {
+            return Ok(false);
         }
         let (send, receive) = oneshot::channel();
         self.decisions
@@ -185,6 +201,22 @@ pub struct SessionManager {
     sessions: RwLock<HashMap<String, Arc<ActiveSession>>>,
     decisions: Arc<StdMutex<HashMap<String, oneshot::Sender<bool>>>>,
     forwarded_routes: ForwardedRoutes,
+}
+
+pub struct DeploymentCommandError {
+    pub message: String,
+    pub stdout: String,
+    pub stderr: String,
+}
+
+impl DeploymentCommandError {
+    fn new(message: impl Into<String>, stdout: &[u8], stderr: &[u8]) -> Self {
+        Self {
+            message: message.into(),
+            stdout: String::from_utf8_lossy(stdout).into_owned(),
+            stderr: String::from_utf8_lossy(stderr).into_owned(),
+        }
+    }
 }
 
 impl SessionManager {
@@ -278,6 +310,36 @@ impl SessionManager {
         Ok(summary)
     }
 
+    pub async fn connect_wait(
+        self: &Arc<Self>,
+        input: ConnectInput,
+        timeout: Duration,
+        cancelled: &AtomicBool,
+    ) -> Result<SessionSummary, String> {
+        let summary = self.connect(input)?;
+        let active = self.get(&summary.id)?;
+        let deadline = tokio::time::Instant::now() + timeout;
+        loop {
+            if cancelled.load(Ordering::Relaxed) {
+                let _ = self.disconnect(&summary.id).await;
+                return Err("已取消".into());
+            }
+            let current = active.summary();
+            match current.status {
+                SessionStatus::Connected => return Ok(current),
+                SessionStatus::Error | SessionStatus::Disconnected => {
+                    return Err(current.error.unwrap_or("自动连接失败".into()));
+                }
+                SessionStatus::Connecting => {}
+            }
+            if tokio::time::Instant::now() >= deadline {
+                let _ = self.disconnect(&summary.id).await;
+                return Err("自动连接超时".into());
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+    }
+
     async fn establish(
         self: &Arc<Self>,
         active: Arc<ActiveSession>,
@@ -305,7 +367,7 @@ impl SessionManager {
                 .clone()
                 .or_else(|| self.db.get_credential(&jump.id));
             let mut jump_handle = self
-                .open_connection(&active.summary().id, &jump, None)
+                .open_connection(&active.summary().id, &jump, None, input.non_interactive)
                 .await
                 .context("跳板机连接失败")?;
             self.authenticate(&mut jump_handle, &jump, jump_credential.as_deref())
@@ -326,7 +388,12 @@ impl SessionManager {
                     0,
                 )
                 .await?;
-            *active.jump_handle.lock().await = Some(jump_handle);
+            let mut jump_slot = active.jump_handle.lock().await;
+            if active.closing.load(Ordering::Acquire) {
+                return Err(anyhow!("连接已取消"));
+            }
+            *jump_slot = Some(jump_handle);
+            drop(jump_slot);
             Box::pin(channel.into_stream())
         } else {
             let stream = tokio::time::timeout(
@@ -346,7 +413,12 @@ impl SessionManager {
             .clone()
             .or_else(|| self.db.get_credential(&active.bookmark.id));
         let mut handle = self
-            .open_connection(&active.summary().id, &active.bookmark, Some(transport))
+            .open_connection(
+                &active.summary().id,
+                &active.bookmark,
+                Some(transport),
+                input.non_interactive,
+            )
             .await?;
         self.authenticate(&mut handle, &active.bookmark, credential.as_deref())
             .await?;
@@ -368,14 +440,17 @@ impl SessionManager {
             .await?;
         channel.request_shell(true).await?;
         let (reader, writer) = channel.split();
+        if active.closing.load(Ordering::Acquire) {
+            return Err(anyhow!("连接已取消"));
+        }
         *active.handle.lock().await = Some(handle);
         *shell = Some(writer);
-        drop(shell);
         active.set_summary(SessionStatus::Connected, None);
         self.db
             .mark_connected(&active.bookmark.id)
             .map_err(|error| anyhow!(error))?;
         self.emit(AppEvent::Session(active.summary()));
+        drop(shell);
         let manager = self.clone();
         tauri::async_runtime::spawn(async move {
             manager.read_terminal(active, reader).await;
@@ -388,6 +463,7 @@ impl SessionManager {
         session_id: &str,
         bookmark: &Bookmark,
         stream: Option<Transport>,
+        non_interactive: bool,
     ) -> anyhow::Result<client::Handle<ClientHandler>> {
         let config = client::Config {
             inactivity_timeout: Some(Duration::from_secs(20)),
@@ -405,6 +481,7 @@ impl SessionManager {
             db: self.db.clone(),
             decisions: self.decisions.clone(),
             forwarded_routes: self.forwarded_routes.clone(),
+            non_interactive,
         };
         match stream {
             Some(stream) => client::connect_stream(Arc::new(config), stream, handler).await,
@@ -727,6 +804,95 @@ impl SessionManager {
         *active.sftp.lock().await = Some(sftp.clone());
         Ok(sftp)
     }
+
+    pub async fn execute_deployment_command(
+        &self,
+        id: &str,
+        command: &str,
+        cancelled: &AtomicBool,
+    ) -> Result<(u32, String, String), DeploymentCommandError> {
+        let active = self
+            .get(id)
+            .map_err(|e| DeploymentCommandError::new(e, &[], &[]))?;
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(30 * 60);
+        let mut channel = tokio::time::timeout(Duration::from_secs(20), async {
+            let handle = active.handle.lock().await;
+            let channel = handle
+                .as_ref()
+                .ok_or_else(|| DeploymentCommandError::new("SSH 会话未连接", &[], &[]))?
+                .channel_open_session()
+                .await
+                .map_err(|e| DeploymentCommandError::new(e.to_string(), &[], &[]))?;
+            Ok::<_, DeploymentCommandError>(channel)
+        })
+        .await
+        .map_err(|_| DeploymentCommandError::new("打开远端命令通道超时", &[], &[]))??;
+        let (cols, rows) = *active
+            .terminal_size
+            .lock()
+            .map_err(|_| DeploymentCommandError::new("终端尺寸锁已损坏", &[], &[]))?;
+        tokio::time::timeout(
+            Duration::from_secs(20),
+            channel.request_pty(true, "xterm-256color", cols, rows, 0, 0, &[]),
+        )
+        .await
+        .map_err(|_| DeploymentCommandError::new("分配部署伪终端超时", &[], &[]))?
+        .map_err(|error| {
+            DeploymentCommandError::new(format!("远端拒绝部署伪终端：{error}"), &[], &[])
+        })?;
+        tokio::time::timeout(Duration::from_secs(20), channel.exec(true, command))
+            .await
+            .map_err(|_| DeploymentCommandError::new("启动远端命令超时", &[], &[]))?
+            .map_err(|e| DeploymentCommandError::new(e.to_string(), &[], &[]))?;
+        let mut stdout = Vec::new();
+        let mut stderr = Vec::new();
+        let mut exit_code = None;
+        loop {
+            if cancelled.load(Ordering::Relaxed) {
+                let _ = channel.close().await;
+                return Err(DeploymentCommandError::new("已取消", &stdout, &stderr));
+            }
+            let message = tokio::select! {
+                value = channel.wait() => value,
+                _ = tokio::time::sleep_until(deadline) => {
+                    let _ = channel.close().await;
+                    return Err(DeploymentCommandError::new("远端命令超过 30 分钟", &stdout, &stderr));
+                }
+                _ = tokio::time::sleep(Duration::from_millis(200)) => { continue; }
+            };
+            match message {
+                Some(ChannelMsg::Data { data }) => {
+                    let count = (64 * 1024usize)
+                        .saturating_sub(stdout.len())
+                        .min(data.len());
+                    stdout.extend_from_slice(&data[..count]);
+                }
+                Some(ChannelMsg::ExtendedData { data, .. }) => {
+                    let count = (64 * 1024usize)
+                        .saturating_sub(stderr.len())
+                        .min(data.len());
+                    stderr.extend_from_slice(&data[..count]);
+                }
+                Some(ChannelMsg::ExitStatus { exit_status }) => exit_code = Some(exit_status),
+                Some(ChannelMsg::ExitSignal { error_message, .. }) => {
+                    return Err(DeploymentCommandError::new(
+                        format!("远端命令被终止：{error_message}"),
+                        &stdout,
+                        &stderr,
+                    ));
+                }
+                Some(_) => {}
+                None => break,
+            }
+        }
+        Ok((
+            exit_code.ok_or_else(|| {
+                DeploymentCommandError::new("远端命令没有返回退出码", &stdout, &stderr)
+            })?,
+            String::from_utf8_lossy(&stdout).into_owned(),
+            String::from_utf8_lossy(&stderr).into_owned(),
+        ))
+    }
     pub async fn direct_tcpip(
         &self,
         id: &str,
@@ -811,6 +977,11 @@ impl SessionManager {
     }
     pub async fn list_remote(&self, id: &str, path: String) -> Result<Vec<DirectoryEntry>, String> {
         let active = self.get(id)?;
+        if active.remote_list_mode.load(Ordering::Acquire) == REMOTE_LIST_MODE_UNKNOWN
+            && active.sftp.lock().await.is_some()
+        {
+            active.remote_list_mode.store(REMOTE_LIST_MODE_SFTP, Ordering::Release);
+        }
         if active.remote_list_mode.load(Ordering::Acquire) != REMOTE_LIST_MODE_SFTP {
             match self.list_remote_with_exec(&active, &path).await {
                 Ok(entries) => {
@@ -824,7 +995,11 @@ impl SessionManager {
                         .remote_list_mode
                         .store(REMOTE_LIST_MODE_SFTP, Ordering::Release);
                 }
-                Err(RemoteExecError::Timeout) => {}
+                Err(RemoteExecError::Timeout) => {
+                    active
+                        .remote_list_mode
+                        .store(REMOTE_LIST_MODE_SFTP, Ordering::Release);
+                }
                 Err(RemoteExecError::Failed(message)) => return Err(message),
             }
         }
@@ -837,7 +1012,7 @@ impl SessionManager {
     ) -> Result<Vec<DirectoryEntry>, RemoteExecError> {
         let encoded_path = STANDARD.encode(path.as_bytes());
         let command = remote_list_command(&encoded_path);
-        let output = self.exec_remote(active, &command).await?;
+        let output = self.exec_remote_with_timeout(active, &command, REMOTE_LIST_EXEC_TIMEOUT).await?;
         let parsed = parse_remote_entries(&output);
         #[cfg(debug_assertions)]
         match &parsed {
@@ -858,11 +1033,12 @@ impl SessionManager {
         id: &str,
         path: String,
     ) -> Result<Vec<DirectoryEntry>, String> {
-        let entries = self
-            .sftp(id)
-            .await?
-            .read_dir(path)
+        let sftp = tokio::time::timeout(REMOTE_SFTP_OPEN_TIMEOUT, self.sftp(id))
             .await
+            .map_err(|_| "打开远端 SFTP 连接超时".to_string())??;
+        let entries = tokio::time::timeout(REMOTE_SFTP_LIST_TIMEOUT, sftp.read_dir(path))
+            .await
+            .map_err(|_| "读取远端目录超时，请稍后重试".to_string())?
             .map_err(|e| e.to_string())?;
         Ok(entries
             .map(|entry| {
@@ -888,7 +1064,15 @@ impl SessionManager {
         active: &ActiveSession,
         command: &str,
     ) -> Result<String, RemoteExecError> {
-        let deadline = tokio::time::Instant::now() + REMOTE_EXEC_TIMEOUT;
+        self.exec_remote_with_timeout(active, command, REMOTE_EXEC_TIMEOUT).await
+    }
+    async fn exec_remote_with_timeout(
+        &self,
+        active: &ActiveSession,
+        command: &str,
+        timeout: Duration,
+    ) -> Result<String, RemoteExecError> {
+        let deadline = tokio::time::Instant::now() + timeout;
         let mut channel = tokio::time::timeout_at(deadline, async {
             let handle = active.handle.lock().await;
             let channel = handle
@@ -904,11 +1088,11 @@ impl SessionManager {
         match tokio::time::timeout_at(deadline, channel.exec(true, command)).await {
             Ok(Ok(())) => {}
             Ok(Err(_)) => {
-                let _ = channel.close().await;
+                let _ = tokio::time::timeout(Duration::from_secs(1), channel.close()).await;
                 return Err(RemoteExecError::Unavailable);
             }
             Err(_) => {
-                let _ = channel.close().await;
+                let _ = tokio::time::timeout(Duration::from_secs(1), channel.close()).await;
                 return Err(RemoteExecError::Timeout);
             }
         }
@@ -920,7 +1104,7 @@ impl SessionManager {
                 match message {
                     ChannelMsg::Data { data } => {
                         if stdout.len().saturating_add(data.len()) > REMOTE_EXEC_OUTPUT_LIMIT {
-                            let _ = channel.close().await;
+                            let _ = tokio::time::timeout(Duration::from_secs(1), channel.close()).await;
                             return Err(RemoteExecError::Failed("远端目录内容过大".into()));
                         }
                         stdout.extend_from_slice(&data);
@@ -962,55 +1146,10 @@ impl SessionManager {
         match tokio::time::timeout_at(deadline, read_output).await {
             Ok(result) => result,
             Err(_) => {
-                let _ = channel.close().await;
+                let _ = tokio::time::timeout(Duration::from_secs(1), channel.close()).await;
                 Err(RemoteExecError::Timeout)
             }
         }
-    }
-    pub async fn remote_tree(
-        &self,
-        id: &str,
-        root: &str,
-    ) -> Result<HashMap<String, DirectoryEntry>, String> {
-        let sftp = self.sftp(id).await?;
-        let mut result = HashMap::new();
-        let mut pending = vec![(root.trim_end_matches('/').to_string(), String::new())];
-        while let Some((directory, prefix)) = pending.pop() {
-            for entry in sftp
-                .read_dir(if directory.is_empty() {
-                    "/".to_string()
-                } else {
-                    directory.clone()
-                })
-                .await
-                .map_err(|e| e.to_string())?
-            {
-                let metadata = entry.metadata();
-                if metadata.is_symlink() {
-                    return Err(format!("暂不支持部署符号链接：{}", entry.path()));
-                }
-                let relative = if prefix.is_empty() {
-                    entry.file_name()
-                } else {
-                    format!("{prefix}/{}", entry.file_name())
-                };
-                if metadata.is_dir() {
-                    pending.push((entry.path(), relative));
-                } else if metadata.is_regular() {
-                    result.insert(
-                        relative,
-                        DirectoryEntry {
-                            name: entry.file_name(),
-                            path: entry.path(),
-                            kind: EntryKind::File,
-                            size: metadata.size,
-                            modified_at: metadata.mtime.map(|value| value as i64 * 1000),
-                        },
-                    );
-                }
-            }
-        }
-        Ok(result)
     }
     pub async fn create_remote_directory(&self, id: &str, path: String) -> Result<(), String> {
         self.sftp(id)
@@ -1027,9 +1166,26 @@ impl SessionManager {
             .map_err(|e| e.to_string())
     }
     pub async fn remove_remote(&self, id: &str, paths: Vec<String>) -> Result<(), String> {
-        let sftp = self.sftp(id).await?;
-        for path in paths {
-            self.remove_remote_entry(&sftp, path).await?;
+        // Validate the entire selection before deleting the first entry.
+        let removals = paths.iter().map(|path| remote_remove_command(path)).collect::<Result<Vec<_>, _>>()?;
+        if removals.is_empty() {
+            return Ok(());
+        }
+        let home = self.remote_home(id).await?;
+        protect_remote_home(&removals, &home)?;
+        let active = self.get(id)?;
+        let mut fallback_sftp = None;
+        for (path, command) in removals {
+            if fallback_sftp.is_none() {
+                match self.exec_remote_with_timeout(&active, &command, REMOTE_REMOVE_EXEC_TIMEOUT).await {
+                    Ok(_) => continue,
+                    Err(RemoteExecError::Unavailable) => {}
+                    Err(RemoteExecError::Timeout) => return Err("远端删除超时，命令可能仍在执行".into()),
+                    Err(RemoteExecError::Failed(message)) => return Err(message),
+                }
+                fallback_sftp = Some(self.sftp(id).await?);
+            }
+            self.remove_remote_entry(fallback_sftp.as_ref().expect("SFTP fallback"), path).await?;
         }
         Ok(())
     }
@@ -1102,6 +1258,29 @@ fn shell_quote(value: &str) -> String {
     format!("'{}'", value.replace('\'', "'\"'\"'"))
 }
 
+fn remote_remove_command(path: &str) -> Result<(String, String), String> {
+    let path = path.trim_end_matches('/');
+    if !path.starts_with('/') || path.chars().any(char::is_control) {
+        return Err("远端删除只接受规范的绝对路径".into());
+    }
+    let components = path.split('/').skip(1).collect::<Vec<_>>();
+    if components.iter().any(|part| part.is_empty() || *part == "." || *part == "..") {
+        return Err("远端删除路径不能包含空目录、. 或 ..".into());
+    }
+    if components.len() < 2 {
+        return Err("不能删除远端根目录或根目录下的顶层路径".into());
+    }
+    Ok((path.into(), format!("command rm -r -- {}", shell_quote(path))))
+}
+
+fn protect_remote_home(removals: &[(String, String)], home: &str) -> Result<(), String> {
+    if removals.iter().any(|(path, _)| path == home.trim_end_matches('/')) {
+        Err("不能删除远端用户主目录".into())
+    } else {
+        Ok(())
+    }
+}
+
 fn remote_list_command(encoded_path: &str) -> String {
     let script = shell_quote(REMOTE_LIST_SCRIPT);
     let path = shell_quote(encoded_path);
@@ -1158,7 +1337,7 @@ impl Utf8Decoder {
 mod tests {
     use super::{
         EntryKind, REMOTE_LIST_MARKER, REMOTE_LIST_SCRIPT, Utf8Decoder, parse_remote_entries,
-        remote_list_command, shell_quote,
+        protect_remote_home, remote_list_command, remote_remove_command, shell_quote,
     };
 
     #[test]
@@ -1167,9 +1346,25 @@ mod tests {
     }
 
     #[test]
-    fn remote_directory_script_uses_legacy_python_apis() {
+    fn remote_remove_uses_one_quoted_argument_and_protects_root() {
+        let path = "/tmp/it's here; touch /tmp/unwanted";
+        assert_eq!(
+            remote_remove_command(path).unwrap(),
+            (path.into(), format!("command rm -r -- {}", shell_quote(path)))
+        );
+        assert_eq!(remote_remove_command("/tmp/link/").unwrap(), ("/tmp/link".into(), "command rm -r -- '/tmp/link'".into()));
+        for path in ["", "/", "//", "/etc", "relative/file", "/tmp/..", "/tmp/../", "/tmp/./file", "/tmp//file", ".", "..", "/tmp/\0bad", "/tmp/\nbad"] {
+            assert!(remote_remove_command(path).is_err(), "{path:?}");
+        }
+        let removals = vec![remote_remove_command("/home/alice").unwrap()];
+        assert!(protect_remote_home(&removals, "/home/alice/").is_err());
+        assert!(protect_remote_home(&removals, "/home/bob").is_ok());
+    }
+
+    #[test]
+    fn remote_directory_script_keeps_legacy_fallback() {
         assert!(!REMOTE_LIST_SCRIPT.contains("os.fsdecode"));
-        assert!(!REMOTE_LIST_SCRIPT.contains("os.scandir"));
+        assert!(REMOTE_LIST_SCRIPT.contains("hasattr(os,'scandir')"));
         assert!(REMOTE_LIST_SCRIPT.contains("os.listdir"));
     }
 

@@ -1,4 +1,4 @@
-use std::{fs, path::Path, sync::Mutex};
+use std::{collections::HashSet, fs, path::Path, sync::Mutex};
 
 use chrono::Utc;
 use keyring::Entry;
@@ -9,6 +9,7 @@ use uuid::Uuid;
 use crate::models::*;
 
 const AI_API_KEY_ACCOUNT: &str = "__ai_api_key__";
+const DEPLOYMENT_WEB_API_TOKEN_ACCOUNT: &str = "__deployment_web_api_token__";
 const AI_COMMAND_HISTORY_KEY: &str = "aiCommandHistory";
 const AI_COMMAND_HISTORY_LIMIT: usize = 10;
 
@@ -16,6 +17,30 @@ pub struct Database {
     connection: Mutex<Connection>,
     credential_service: String,
     legacy_credential_service: Option<String>,
+}
+
+fn deployment_run_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<DeploymentRun> {
+    Ok(DeploymentRun {
+        id: row.get(0)?,
+        deployment_id: row.get(1)?,
+        bookmark_id: row.get(2)?,
+        trigger_type: row.get(3)?,
+        started_at: row.get(4)?,
+        finished_at: row.get(5)?,
+        status: row.get(6)?,
+        selected_file_count: row.get::<_, i64>(7)? as usize,
+        archive_enabled: row.get::<_, i64>(8)? != 0,
+        archive_size: row.get(9)?,
+        manifest_sha256: row.get(10)?,
+        remote_destination_dir: row.get(11)?,
+        command_exit_code: row.get(12)?,
+        stdout: row.get(13)?,
+        stderr: row.get(14)?,
+        error: row.get(15)?,
+        manifest: row.get(16)?,
+        command_line: row.get(17)?,
+        hook_error: row.get(18)?,
+    })
 }
 
 impl Database {
@@ -62,7 +87,17 @@ impl Database {
               bytesTotal INTEGER NOT NULL, bytesTransferred INTEGER NOT NULL, speed REAL NOT NULL, error TEXT,
               createdAt TEXT NOT NULL, updatedAt TEXT NOT NULL
             );
-            PRAGMA user_version = 6;
+            CREATE TABLE IF NOT EXISTS deployment_runs (
+              id TEXT PRIMARY KEY, deploymentId TEXT NOT NULL, bookmarkId TEXT NOT NULL,
+              triggerType TEXT NOT NULL, startedAt TEXT NOT NULL, finishedAt TEXT,
+              status TEXT NOT NULL, selectedFileCount INTEGER NOT NULL,
+              archiveEnabled INTEGER NOT NULL, archiveSize INTEGER, manifestSha256 TEXT,
+              remoteStagingDir TEXT NOT NULL, commandExitCode INTEGER,
+              stdout TEXT NOT NULL, stderr TEXT NOT NULL, error TEXT, manifest TEXT,
+              commandLine TEXT NOT NULL DEFAULT '', hookError TEXT
+            );
+            CREATE INDEX IF NOT EXISTS deployment_runs_profile_time ON deployment_runs(deploymentId, startedAt DESC);
+            PRAGMA user_version = 8;
         "#))?;
         let has_sort_order = self.with_conn(|db| {
             let mut statement = db.prepare("PRAGMA table_info(bookmarks)")?;
@@ -95,7 +130,16 @@ impl Database {
                 transaction.commit()
             })?;
         }
-        self.with_conn(|db| db.execute("UPDATE transfers SET status='interrupted', error='应用上次退出时传输未完成', updatedAt=? WHERE status IN ('queued','scanning','running','conflict')", [Utc::now().to_rfc3339()]).map(|_| ()))
+        let has_hook_error = self.with_conn(|db| {
+            let mut statement = db.prepare("PRAGMA table_info(deployment_runs)")?;
+            let columns = statement.query_map([], |row| row.get::<_, String>(1))?.collect::<rusqlite::Result<Vec<_>>>()?;
+            Ok(columns.iter().any(|column| column == "hookError"))
+        })?;
+        if !has_hook_error {
+            self.with_conn(|db| db.execute("ALTER TABLE deployment_runs ADD COLUMN hookError TEXT", []).map(|_| ()))?;
+        }
+        self.with_conn(|db| db.execute("UPDATE transfers SET status='interrupted', error='应用上次退出时传输未完成', updatedAt=? WHERE status IN ('queued','scanning','running','conflict')", [Utc::now().to_rfc3339()]).map(|_| ()))?;
+        self.with_conn(|db| db.execute("UPDATE deployment_runs SET status='failed', error='应用上次退出时部署未完成', finishedAt=? WHERE status NOT IN ('succeeded','failed','cancelled')", [Utc::now().to_rfc3339()]).map(|_| ()))
     }
 
     fn with_conn<T>(
@@ -476,6 +520,17 @@ impl Database {
         self.get_password(AI_API_KEY_ACCOUNT)
     }
 
+    pub fn save_deployment_web_api_token(&self, token: &str) -> Result<(), String> {
+        Entry::new(&self.credential_service, DEPLOYMENT_WEB_API_TOKEN_ACCOUNT)
+            .map_err(|e| e.to_string())?
+            .set_password(token)
+            .map_err(|e| e.to_string())
+    }
+
+    pub fn get_deployment_web_api_token(&self) -> Option<String> {
+        self.get_password(DEPLOYMENT_WEB_API_TOKEN_ACCOUNT)
+    }
+
     pub fn delete_ai_api_key(&self) {
         for service in self.credential_services() {
             if let Ok(entry) = Entry::new(service, AI_API_KEY_ACCOUNT) {
@@ -561,6 +616,33 @@ impl Database {
         })
     }
 
+    pub fn save_deployment_run(&self, run: &DeploymentRun) -> Result<(), String> {
+        self.with_conn(|db| db.execute(r#"INSERT INTO deployment_runs(id,deploymentId,bookmarkId,triggerType,startedAt,finishedAt,status,selectedFileCount,archiveEnabled,archiveSize,manifestSha256,remoteStagingDir,commandExitCode,stdout,stderr,error,manifest,commandLine,hookError)
+            VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET finishedAt=excluded.finishedAt,status=excluded.status,selectedFileCount=excluded.selectedFileCount,archiveSize=excluded.archiveSize,manifestSha256=excluded.manifestSha256,remoteStagingDir=excluded.remoteStagingDir,commandExitCode=excluded.commandExitCode,stdout=excluded.stdout,stderr=excluded.stderr,error=excluded.error,manifest=excluded.manifest,commandLine=excluded.commandLine,hookError=excluded.hookError"#,
+                params![run.id,run.deployment_id,run.bookmark_id,run.trigger_type,run.started_at,run.finished_at,run.status,run.selected_file_count as i64,run.archive_enabled as i64,run.archive_size,run.manifest_sha256,run.remote_destination_dir,run.command_exit_code,run.stdout,run.stderr,run.error,run.manifest,run.command_line,run.hook_error]).map(|_| ()))
+    }
+
+    pub fn list_deployment_runs(&self, deployment_id: &str) -> Result<Vec<DeploymentRun>, String> {
+        self.with_conn(|db| {
+            let mut statement = db.prepare("SELECT id,deploymentId,bookmarkId,triggerType,startedAt,finishedAt,status,selectedFileCount,archiveEnabled,archiveSize,manifestSha256,remoteStagingDir,commandExitCode,'' AS stdout,'' AS stderr,error,NULL AS manifest,commandLine,hookError FROM deployment_runs WHERE deploymentId=? ORDER BY startedAt DESC LIMIT 500")?;
+            statement.query_map([deployment_id], deployment_run_from_row)?.collect()
+        })
+    }
+
+    pub fn get_deployment_run(&self, id: &str) -> Result<Option<DeploymentRun>, String> {
+        self.with_conn(|db| db.query_row("SELECT id,deploymentId,bookmarkId,triggerType,startedAt,finishedAt,status,selectedFileCount,archiveEnabled,archiveSize,manifestSha256,remoteStagingDir,commandExitCode,stdout,stderr,error,manifest,commandLine,hookError FROM deployment_runs WHERE id=?", [id], deployment_run_from_row).optional())
+    }
+
+    pub fn remove_deployment_runs(&self, ids: &[String]) -> Result<(), String> {
+        self.with_conn(|db| {
+            let transaction = db.transaction()?;
+            for id in ids {
+                transaction.execute("DELETE FROM deployment_runs WHERE id=?", [id])?;
+            }
+            transaction.commit()
+        })
+    }
+
     pub fn list_ai_command_history(&self) -> Vec<AiCommandHistoryEntry> {
         self.get_setting(AI_COMMAND_HISTORY_KEY, Vec::new())
     }
@@ -592,21 +674,36 @@ impl Database {
             ON CONFLICT(id) DO UPDATE SET sessionId=excluded.sessionId,bookmarkId=excluded.bookmarkId,destinationPath=excluded.destinationPath,status=excluded.status,bytesTotal=excluded.bytesTotal,bytesTransferred=excluded.bytesTransferred,speed=excluded.speed,error=excluded.error,updatedAt=excluded.updatedAt"#,
             params![task.id,task.session_id,task.bookmark_id,if task.direction==TransferDirection::Download{"download"}else{"upload"},task.source_path,task.destination_path,task.display_name,task.status.as_str(),task.bytes_total,task.bytes_transferred,task.speed,task.error,task.created_at,task.updated_at]).map(|_| ()))
     }
-    pub fn clear_completed(&self) -> Result<(), String> {
+    pub fn clear_transfer_history(&self, active_ids: &HashSet<String>) -> Result<Vec<String>, String> {
         self.with_conn(|db| {
-            db.execute(
-                "DELETE FROM transfers WHERE status IN ('completed','cancelled')",
-                [],
-            )
-            .map(|_| ())
+            let transaction = db.transaction()?;
+            let terminal_ids = {
+                let mut statement = transaction.prepare("SELECT id FROM transfers WHERE status IN ('completed','failed','cancelled','interrupted')")?;
+                statement.query_map([], |row| row.get::<_, String>(0))?.collect::<rusqlite::Result<Vec<_>>>()?
+            };
+            let deleted: Vec<_> = terminal_ids.into_iter().filter(|id| !active_ids.contains(id)).collect();
+            for id in &deleted {
+                transaction.execute("DELETE FROM transfers WHERE id=?", [id])?;
+            }
+            transaction.commit()?;
+            Ok(deleted)
+        })
+    }
+
+    pub fn list_all_deployment_runs(&self) -> Result<Vec<DeploymentRun>, String> {
+        self.with_conn(|db| {
+            let mut statement = db.prepare("SELECT id,deploymentId,bookmarkId,triggerType,startedAt,finishedAt,status,selectedFileCount,archiveEnabled,archiveSize,manifestSha256,remoteStagingDir,commandExitCode,'' AS stdout,'' AS stderr,error,NULL AS manifest,commandLine,hookError FROM deployment_runs ORDER BY startedAt DESC LIMIT 500")?;
+            statement.query_map([], deployment_run_from_row)?.collect()
         })
     }
 }
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashSet;
+
     use super::Database;
-    use crate::models::{AiCommandHistoryEntry, AiRiskLevel, AiShell, AuthType, BookmarkInput};
+    use crate::models::{AiCommandHistoryEntry, AiRiskLevel, AiShell, AuthType, BookmarkInput, TransferDirection, TransferStatus, TransferTask};
     use uuid::Uuid;
 
     fn input(name: &str, group_name: &str) -> BookmarkInput {
@@ -626,6 +723,40 @@ mod tests {
             keepalive_count_max: 3,
             note: String::new(),
         }
+    }
+
+    #[test]
+    fn clear_transfer_history_removes_all_terminal_records() {
+        let path = std::env::temp_dir().join(format!("luna-transfer-history-{}.db", Uuid::new_v4()));
+        let db = Database::open(&path, "luna-transfer-history-test").unwrap();
+        let mut still_active = HashSet::new();
+        for status in [
+            TransferStatus::Queued, TransferStatus::Scanning, TransferStatus::Running,
+            TransferStatus::Conflict, TransferStatus::Completed, TransferStatus::Failed,
+            TransferStatus::Cancelled, TransferStatus::Interrupted,
+        ] {
+            let name = status.as_str().to_string();
+            let id = Uuid::new_v4().to_string();
+            if status == TransferStatus::Cancelled { still_active.insert(id.clone()); }
+            db.save_transfer(&TransferTask {
+                id, session_id: "session".into(),
+                bookmark_id: "bookmark".into(), direction: TransferDirection::Upload,
+                source_path: "/source".into(), destination_path: "/destination".into(),
+                display_name: name, status, bytes_total: 1, bytes_transferred: 0,
+                speed: 0.0, error: None, created_at: "2026-09-30T00:00:00Z".into(),
+                updated_at: "2026-09-30T00:00:00Z".into(),
+            }).unwrap();
+        }
+        assert_eq!(db.clear_transfer_history(&still_active).unwrap().len(), 3);
+        assert_eq!(db.list_transfers().unwrap().len(), 5);
+        assert_eq!(db.clear_transfer_history(&HashSet::new()).unwrap().len(), 1);
+        let remaining = db.list_transfers().unwrap();
+        assert_eq!(remaining.len(), 4);
+        assert!(remaining.iter().all(|task| matches!(task.status,
+            TransferStatus::Queued | TransferStatus::Scanning | TransferStatus::Running | TransferStatus::Conflict
+        )));
+        drop(db);
+        let _ = std::fs::remove_file(path);
     }
 
     #[test]

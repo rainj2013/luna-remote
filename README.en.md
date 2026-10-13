@@ -30,11 +30,13 @@ Luna Remote keeps everyday remote work in one window. Connect to a server, move 
 - Dark, light, and system appearance modes
 - English and Simplified Chinese interface
 
-## SFTP and directory deployment
+## SFTP and deployment
 
 The two-pane file browser displays local files on the left and remote files on the right. Upload, download, preview, rename, delete, or drag files between the panes. Transfers run through a queue and failed tasks can be retried.
 
-Directory deployment compares a saved local directory with a remote directory before uploading only new and changed files. It can optionally remove remote-only files after every upload succeeds.
+Deployment selects files and folders from a local workspace and uploads a ZIP, tar.gz, or individual files to the specified upload destination directory. A saved Bash script can then extract or copy them to the final deployment directory. Archives are named workspace-root_yyyyMMddHHmmss.extension. Daily scheduling and local run history are supported. The app does not delete remote business files automatically.
+
+Deployment tasks can be imported and exported, and can send Webhook notifications after success or failure.
 
 ![Luna Remote SFTP](docs/images/sftp.png)
 

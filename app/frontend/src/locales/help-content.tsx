@@ -162,53 +162,13 @@ export function createChineseHelpSections(commandKey: string): HelpSection[] {
           <li>选择文件后使用中间箭头上传或下载，也可以在两栏间拖放。系统文件管理器中的文件可直接拖到远端栏上传。</li>
         </ul>
         <h3>队列与冲突</h3>
-        <p>传输面板显示总体进度、速度和预计时间。发生同名冲突时可选择覆盖、跳过或自动重命名，并将选择应用到当前批次。失败、中断或取消的任务可以在连接恢复后重试。</p>
+        <p>传输面板显示总体进度、速度和预计时间。发生同名冲突时可选择覆盖、跳过或自动重命名，并将选择应用到当前批次。失败、中断或取消的任务可以在连接恢复后重试。“清除记录”会移除已完成、失败、取消和中断的记录，不影响正在传输的任务或本地、远端文件。</p>
       </>
     },
     {
       id: 'deployment', title: '部署', icon: Rocket,
-      searchText: '部署 profile 配置 本地目录 远端目录 预览 diff 新增 变化 相同 仅远端 删除 多余文件 单向同步 发布 rsync 哈希 修改时间 符号链接',
-      content: <>
-        <h2>单向部署</h2>
-        <p>部署用于将一个固定的本地目录反复发布到当前连接的远端目录。它会先比较整个目录，再上传新增或变化的文件；适合发布网站、构建产物、脚本和配置目录。入口位于“文件传输”视图的 session 工具栏。</p>
-        <h3>与普通文件传输的区别</h3>
-        <div className="help-table-scroll"><table className="help-comparison-table"><colgroup><col /><col /><col /></colgroup><thead><tr><th scope="col">能力</th><th scope="col">普通文件传输</th><th scope="col">部署</th></tr></thead><tbody>
-          <tr><th scope="row">操作方式</th><td>每次手动选择文件或目录</td><td>保存固定的本地目录和远端目录</td></tr>
-          <tr><th scope="row">方向</th><td>支持上传和下载</td><td>仅从本地发布到远端</td></tr>
-          <tr><th scope="row">执行前比较</th><td>不比较整个目录</td><td>递归扫描两端并显示差异</td></tr>
-          <tr><th scope="row">传输内容</th><td>传输本次选择的项目</td><td>只上传新增和变化的文件</td></tr>
-          <tr><th scope="row">远端多余文件</th><td>保持不动</td><td>可选择在上传全部成功后删除</td></tr>
-          <tr><th scope="row">适用场景</th><td>临时复制、下载或整理文件</td><td>重复发布同一项目或目录</td></tr>
-        </tbody></table></div>
-        <h3>使用流程</h3>
-        <ol>
-          <li>保持目标机器的 SSH session 已连接，然后打开“文件传输”视图中的部署入口。</li>
-          <li>新建部署配置，填写便于识别的名称，选择本地目录，并填写远端绝对路径。</li>
-          <li>点击“保存并预览”。应用会递归扫描两端目录，但此时不会上传或删除文件。</li>
-          <li>逐项检查差异，尤其确认远端目录以及“仅远端”项目是否符合预期。</li>
-          <li>点击“开始部署”。新增和变化文件会进入普通传输队列，可在传输面板查看进度、速度和失败原因。</li>
-          <li>等待传输完成。下次发布时复用相同配置，再次预览并执行即可。</li>
-        </ol>
-        <h3>差异状态</h3>
-        <table className="deployment-status-table"><colgroup><col /><col /></colgroup><tbody>
-          <tr><th scope="row">新增</th><td>文件只存在于本地，部署时上传。</td></tr>
-          <tr><th scope="row">变化</th><td>两端都有同名文件，但大小或修改时间不同，部署时上传并覆盖远端文件。</td></tr>
-          <tr><th scope="row">相同</th><td>文件大小相同，且修改时间差不超过约 2 秒，不会重复上传。</td></tr>
-          <tr><th scope="row">仅远端</th><td>文件只存在于远端。默认保留；启用删除选项后才会删除。</td></tr>
-        </tbody></table>
-        <h3>示例：发布前端构建产物</h3>
-        <p>本地构建目录为 <code>~/project/dist</code>，远端站点目录为 <code>/srv/www/app</code>。保存配置后先预览差异，确认无误再部署。以后重新构建时，只需再次预览和执行，不必逐个选择文件。</p>
-        <h3>当前判断规则与限制</h3>
-        <ul>
-          <li>差异依据是文件大小和修改时间，不计算内容哈希；时间比较允许约 2 秒误差。</li>
-          <li>变化文件会整文件重新上传，不是 <code>rsync</code> 的分块增量传输。</li>
-          <li>部署只处理普通文件；本地或远端目录中存在符号链接时会停止并提示，不会跟随链接。</li>
-          <li>部署不是持续监控或双向同步。修改远端文件不会自动下载到本地，之后部署可能覆盖该远端修改。</li>
-          <li>远端目录必须对当前 SSH 用户具有读取、创建、覆盖权限；启用删除时还需要删除权限。</li>
-          <li>空目录本身不会单独同步；所需父目录会在上传文件时创建。</li>
-        </ul>
-        <div className="help-warning"><TriangleAlert size={15} aria-hidden="true" /><div><strong>删除远端多余文件</strong><p>启用此选项后，仅当本次所有上传任务都成功时，才会删除预览中标记为“仅远端”的文件。开始前仍应确认远端目录和差异列表。</p></div></div>
-      </>
+      searchText: '部署 工作区 选择 ZIP tar.gz 目标目录 Shell 定时 历史 导入 导出 迁移',
+      content: <><h2>部署</h2><p>在“文件传输”视图打开“部署”。选择工作区中的文件或目录，设置上传目标目录，并决定是否生成 ZIP 或 tar.gz。压缩包按“根目录_yyyyMMddHHmmss.扩展名”命名。压缩包或散文件会先上传到该目录，散文件保持工作区中的相对路径；同名文件会被覆盖。上传目标目录不一定是最终部署目录；可通过后续 Shell 脚本解压或复制文件。</p><ol><li>新建任务并选择工作区，在文件树中勾选内容；展开目录可排除单个文件。</li><li>填写上传目标目录，按需展开 Bash 脚本和每日执行设置。</li><li>点击“保存任务”可单独保存定时任务；“预览上传内容”只扫描所选文件并计算校验值，不会保存。手工部署可直接点击“保存并部署”，无需先预览。若磁盘上的文件发生变化，可点击“重新扫描本地文件”更新预览。</li><li>部署结果会显示 Shell 退出码、标准输出和标准错误；旧记录可在“历史”页查看。</li></ol><p>可放大 Shell 编辑器浏览和修改脚本；AI 编写会打开独立窗口，生成后可修改脚本并确认填入。点击变量可插入 <code>{'{{UPLOAD_DIR}}'}</code>、<code>{'{{FILE_NAME}}'}</code> 和 <code>{'{{FILE_PATH}}'}</code>；执行时会安全引用路径值。其中 UPLOAD_DIR 是上传目标目录，不代表最终部署目录。多个散文件时，文件名和文件路径变量为空。部署命令会分配伪终端以支持要求 TTY 的 sudo，但无法输入密码；sudo 需要远端免密授权，建议使用 sudo -n。应用不会自动解压压缩包、删除远端文件或重启服务。</p><p>可导出当前连接的全部部署任务为 JSON 文件，再在另一台机器的目标连接中导入。导入时可勾选任务并修改本机工作区；文件选择、上传目录、Shell、定时和 Webhook 配置会保留，任务 ID 会更新。运行历史、工作区文件和 SSH 凭据不会导出。任务包可能包含 Webhook URL 等敏感配置。定时任务只在应用运行时触发，无需打开部署弹窗。执行时优先复用目标机器已连接的 SSH 会话，结束后保持连接；仅在没有可用连接而需要自动重连时，才要求事先确认 Host Key 并保存所需凭据。删除历史只删除本地记录，不会删除已上传的远端文件。</p></>
     },
     {
       id: 'tunnels', title: '端口转发', icon: Network,
@@ -293,8 +253,8 @@ export function createEnglishHelpSections(commandKey: string): HelpSection[] {
     { id: 'terminal', title: 'Sessions and terminal', icon: SquareTerminal, searchText: 'session terminal tab search copy paste shortcut webgl reconnect', content: <><h2>Sessions and terminal</h2><ul><li>Disconnected tabs and scrollback remain available for reconnection.</li><li>Use <kbd>{commandKey}+C</kbd> and <kbd>{commandKey}+V</kbd> to copy and paste.</li><li>Use <kbd>{commandKey}+F</kbd> to search terminal scrollback.</li><li>Use <kbd>{commandKey}+Shift+T</kbd> for another session to the current host and <kbd>{commandKey}+W</kbd> to close the current tab.</li><li>HTTP and HTTPS links open in the system browser.</li></ul></> },
     { id: 'ai-settings', title: 'AI service', icon: Bot, searchText: 'AI API base URL key model provider thinking OpenAI compatible test', content: <><h2>AI service</h2><p>Open Settings → AI and configure an OpenAI-compatible base URL, model, and API key. Test the connection before saving.</p><ul><li>The base URL may end in <code>/v1</code> or point directly to a chat-completions endpoint.</li><li>The provider controls model-specific thinking parameters.</li><li>API keys are kept in secure system storage and excluded from backups and diagnostics.</li></ul></> },
     { id: 'ai-command', title: 'AI command assistant', icon: WandSparkles, searchText: 'AI command shell context redact history raw risk execute', content: <><h2>AI command assistant</h2><p>Describe a task, choose the target shell, and review the generated command, explanation, assumptions, warnings, and risk level.</p><ul><li>Copy writes to the clipboard; Insert writes into the terminal without pressing Enter.</li><li>Execute always asks for confirmation.</li><li>Optional terminal context is limited to 100 lines and 16,000 characters and can be redacted.</li><li>History keeps the ten most recent successful suggestions locally.</li></ul><div className="help-warning"><TriangleAlert size={15} /><div><strong>Review commands before execution</strong><p>Risk detection is advisory. Check paths and side effects, especially for destructive, privilege, process, package, and database commands.</p></div></div></> },
-    { id: 'files', title: 'SFTP and transfers', icon: FolderOpen, searchText: 'sftp files upload download drag preview rename delete conflict queue retry', content: <><h2>SFTP and transfers</h2><ul><li>The left browser is local and the right browser is remote.</li><li>Navigate with the toolbar, filter the current directory, show hidden files, and save favorite paths.</li><li>Double-click directories to enter them and files to preview text.</li><li>Use the center arrows or drag and drop to upload and download.</li><li>Conflicts can overwrite, skip, or auto-rename; failed and interrupted transfers can be retried.</li></ul></> },
-    { id: 'deployment', title: 'Deployment', icon: Rocket, searchText: 'deployment profile directory preview diff publish delete extraneous', content: <><h2>One-way deployment</h2><p>A deployment profile repeatedly publishes one local directory to one remote directory.</p><ol><li>Create a profile and choose both directories.</li><li>Save and preview the recursive comparison.</li><li>Review new, changed, and remote-only paths.</li><li>Start deployment to enqueue new and changed files.</li></ol><p>The optional cleanup setting deletes remote-only files only after every upload succeeds. Preview carefully before enabling it.</p></> },
+    { id: 'files', title: 'SFTP and transfers', icon: FolderOpen, searchText: 'sftp files upload download drag preview rename delete conflict queue retry clear history', content: <><h2>SFTP and transfers</h2><ul><li>The left browser is local and the right browser is remote.</li><li>Navigate with the toolbar, filter the current directory, show hidden files, and save favorite paths.</li><li>Double-click directories to enter them and files to preview text.</li><li>Use the center arrows or drag and drop to upload and download.</li><li>Conflicts can overwrite, skip, or auto-rename; failed and interrupted transfers can be retried.</li><li>Clear history removes completed, failed, cancelled, and interrupted records without affecting active transfers or files.</li></ul></> },
+    { id: 'deployment', title: 'Deploy', icon: Rocket, searchText: 'deployment workspace selection ZIP tar.gz upload destination shell schedule history', content: <><h2>Deployment</h2><p>Select files or folders from a local workspace, then upload a ZIP, tar.gz, or individual files to the upload destination directory. Archives are named workspace-root_yyyyMMddHHmmss.extension. Individual files keep their relative paths, and matching destination files are overwritten. The upload destination may differ from the final deployment directory; the following Shell script can extract or copy the files.</p><ol><li>Create a task and select files. Expand folders to exclude individual items.</li><li>Set the upload destination, and expand the optional Bash script and daily schedule settings when needed.</li><li>Save task stores a scheduled task without a preview. Preview upload scans selected files and calculates checksums without saving. For a manual run, choose Save and deploy directly; preview is optional. If local files change, choose Rescan local files to update the preview.</li><li>The result shows the Shell exit code, standard output, and standard error. Open the History tab to inspect older runs.</li></ol><p>Expand the Shell editor to inspect and edit the script. Write with AI opens a separate dialog where you can edit the generated script before inserting it. Click a variable to insert <code>{'{{UPLOAD_DIR}}'}</code>, <code>{'{{FILE_NAME}}'}</code>, or <code>{'{{FILE_PATH}}'}</code>; paths are safely quoted when the command runs. UPLOAD_DIR is the upload destination, not necessarily the final deployment directory. Filename and file path are empty when uploading multiple individual files. Deployment commands allocate a PTY for sudo that requires a TTY, but cannot enter a password; sudo requires passwordless authorization on the remote host, and sudo -n is recommended. The app does not unpack archives, delete remote files, or restart services automatically.</p><p>Export tasks saves all deployment tasks for the current connection as JSON. Import the file into a target connection on another machine, select tasks, and confirm each local workspace. File selections, upload destinations, Shell scripts, schedules, and Webhook settings are preserved with new task IDs. Run history, workspace files, and SSH credentials are excluded. The JSON may contain sensitive Webhook URLs. Scheduled tasks run while the app is open without requiring the deployment dialog. They reuse a connected SSH session for the target and leave it connected afterward. Only automatic reconnection, when no target session is available, requires trusted host keys and saved credentials. Deleting local history does not remove uploaded remote files.</p></> },
     { id: 'tunnels', title: 'Port forwarding', icon: Network, searchText: 'port forwarding local remote dynamic socks bind target tunnel', content: <><h2>Port forwarding</h2><ul><li><strong>Local:</strong> exposes a local port and forwards it through SSH to a target.</li><li><strong>Remote:</strong> asks the SSH server to listen and forward traffic back through the session.</li><li><strong>Dynamic:</strong> creates a local SOCKS5 proxy.</li></ul><p>Forwarding profiles belong to a connection. An active SSH session is required to start them.</p></> },
     { id: 'settings', title: 'Appearance and diagnostics', icon: Settings, searchText: 'settings language theme icon terminal font background diagnostics', content: <><h2>Appearance and diagnostics</h2><ul><li>Settings → Appearance controls language, theme, app icon, and diagnostic export.</li><li>Settings → Terminal controls font, colors, opacity, and background image.</li><li>Language and theme previews apply immediately; Save persists them.</li><li>Diagnostic exports contain local troubleshooting data but omit saved credentials and AI API keys.</li></ul></> },
     { id: 'security', title: 'Security and troubleshooting', icon: ShieldCheck, searchText: 'security credential keychain host key diagnostics troubleshooting timeout', content: <><h2>Security and troubleshooting</h2><ul><li>Verify host-key fingerprints before trusting a server, especially after a key-change warning.</li><li>Credentials use macOS Keychain or Windows Credential Manager.</li><li>Connection backups do not contain passwords or private-key passphrases.</li><li>For timeouts, verify network reachability, host, port, jump-host routing, and server SSH policy.</li><li>Use diagnostic export when investigating failures; review files before sharing them.</li></ul></> }

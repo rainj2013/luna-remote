@@ -6,6 +6,7 @@ mod deployment;
 mod desktop;
 mod models;
 mod sessions;
+mod snippets;
 mod ssh_config;
 mod transfers;
 mod tunnels;
@@ -200,6 +201,7 @@ pub fn run() {
             sessions_flow,
             sessions_host_key_decision,
             files_home,
+            files_roots,
             files_parent_local,
             files_remote_home,
             files_list_local,
@@ -269,7 +271,11 @@ pub fn run() {
             ai_command_history_list,
             ai_command_history_clear,
             ai_diagnostics_get,
-            ai_diagnostics_clear
+            ai_diagnostics_clear,
+            snippets::saved_commands_list,
+            snippets::saved_commands_save,
+            snippets::saved_commands_remove,
+            snippets::saved_commands_touch
         ])
         .build(tauri::generate_context!())
         .expect("failed to build Luna Remote")

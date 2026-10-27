@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { ArrowRight, Bookmark as BookmarkIcon, Bot, Check, ChevronDown, ChevronRight, CircleHelp, CirclePlus, Copy, Download, Edit3, ExternalLink, Eye, EyeOff, File, FileInput, FileJson2, Folder, FolderOpen, FolderPlus, GripVertical, History as HistoryIcon, Image as ImageIcon, Info, KeyRound, Languages, Maximize2, Minimize2, Minus, Monitor, Moon, Network, Palette, PanelLeftClose, PanelLeftOpen, Play, Plug, Power, Rocket, Search, Send, Server, Settings as SettingsIcon, ShieldAlert, Square, SquareTerminal, Star, Sun, Trash2, Upload, WandSparkles, X } from 'lucide-react'
-import { BUNDLED_TERMINAL_FONT, DEFAULT_AI_SETTINGS, DEFAULT_TERMINAL_SETTINGS, type AiCommandHistoryEntry, type AiCommandSuggestion, type AiProvider, type AiRawExchange, type AiRiskAssessment, type AiSettings, type AiSettingsInput, type AiShell, type AiThinkingMode, type AppEvent, type AppIconId, type AppIconSettings, type AppLanguage, type Bookmark, type BookmarkInput, type ConflictResolution, type ConnectInput, type DeploymentBundle, type DeploymentPreview, type DeploymentPreviewProgress, type DeploymentProgress, type DeploymentRun, type DeploymentProfile, type DirectoryEntry, type HostKeyPrompt, type PortForwardProfile, type SessionStatus, type SshConfigPreview, type TerminalSettings, type TransferTask, type TunnelSummary, type UiTheme, type WebApiConfig, type WebApiStatus } from './types'
+import { ArrowRight, Bookmark as BookmarkIcon, BookMarked, Bot, Check, ChevronDown, ChevronRight, CircleHelp, CirclePlus, Copy, CornerDownLeft, Download, Edit3, ExternalLink, Eye, EyeOff, File, FileInput, FileJson2, Folder, FolderOpen, FolderPlus, GripVertical, History as HistoryIcon, Image as ImageIcon, Info, KeyRound, Languages, Maximize2, Minimize2, Minus, Monitor, Moon, Network, Palette, PanelLeftClose, PanelLeftOpen, Play, Plug, Power, Rocket, Search, Send, Server, Settings as SettingsIcon, ShieldAlert, Square, SquareTerminal, Star, Sun, Trash2, Upload, WandSparkles, X } from 'lucide-react'
+import { BUNDLED_TERMINAL_FONT, DEFAULT_AI_SETTINGS, DEFAULT_TERMINAL_SETTINGS, type AiCommandHistoryEntry, type AiCommandSuggestion, type AiProvider, type AiRawExchange, type AiRiskAssessment, type AiSettings, type AiSettingsInput, type AiShell, type AiThinkingMode, type AppEvent, type AppIconId, type AppIconSettings, type AppLanguage, type Bookmark, type BookmarkInput, type ConflictResolution, type ConnectInput, type DeploymentBundle, type DeploymentPreview, type DeploymentPreviewProgress, type DeploymentProgress, type DeploymentRun, type DeploymentProfile, type DirectoryEntry, type HostKeyPrompt, type PortForwardProfile, type SavedCommand, type SavedCommandInput, type SessionStatus, type SshConfigPreview, type TerminalSettings, type TransferTask, type TunnelSummary, type UiTheme, type WebApiConfig, type WebApiStatus } from './types'
 import { TerminalPane, type TerminalPaneHandle } from './components/TerminalPane'
 import { SftpPane } from './components/SftpPane'
 import { HelpDialog } from './components/HelpDialog'
@@ -102,6 +102,8 @@ export function App(): React.JSX.Element {
   const [appIcons, setAppIcons] = useState<AppIconSettings>({ selected: 'ssh', options: [] })
   const [aiSettings, setAiSettings] = useState<AiSettings>({ ...DEFAULT_AI_SETTINGS })
   const [aiDialog, setAiDialog] = useState(false)
+  const [savedCommands, setSavedCommands] = useState<SavedCommand[]>([])
+  const [commandsDialog, setCommandsDialog] = useState(false)
   const [settingsDialog, setSettingsDialog] = useState(false)
   const [settingsInitialSection, setSettingsInitialSection] = useState<SettingsSection>('appearance')
   const [helpDialog, setHelpDialog] = useState(false)
@@ -154,6 +156,10 @@ export function App(): React.JSX.Element {
   }, [])
 
   useEffect(() => { if (stateRestored.current) void window.api.state.setSidebarCollapsed(sidebarCollapsed).catch((error) => showError(errorMessage(error))) }, [sidebarCollapsed])
+
+  useEffect(() => {
+    void window.api.savedCommands.list().then(setSavedCommands).catch((error) => showError(errorMessage(error)))
+  }, [])
 
   useEffect(() => {
     const media = window.matchMedia('(prefers-color-scheme: dark)')
@@ -507,6 +513,35 @@ export function App(): React.JSX.Element {
     } catch (error) { showError(errorMessage(error)) }
   }
 
+  const saveSavedCommand = async (input: SavedCommandInput): Promise<SavedCommand | undefined> => {
+    try {
+      const saved = await window.api.savedCommands.save(input)
+      setSavedCommands((current) => [saved, ...current.filter((item) => item.id !== saved.id)])
+      return saved
+    } catch (error) { showError(errorMessage(error)); return undefined }
+  }
+  const removeSavedCommand = async (id: string): Promise<void> => {
+    try {
+      await window.api.savedCommands.remove(id)
+      setSavedCommands((current) => current.filter((item) => item.id !== id))
+    } catch (error) { showError(errorMessage(error)) }
+  }
+  const useSavedCommand = (item: SavedCommand, execute: boolean): void => {
+    const sessionId = activeTab?.status === 'connected' ? activeTab.sessionId : undefined
+    if (!sessionId) { showError(t('savedCommands.notConnected')); return }
+    const tabKey = activeKey
+    setCommandsDialog(false)
+    void window.api.savedCommands.touch(item.id).then((updated) => setSavedCommands((current) => current.map((entry) => entry.id === updated.id ? updated : entry))).catch(() => undefined)
+    window.requestAnimationFrame(() => {
+      const pane = terminalPaneRefs.current.get(tabKey)
+      if (pane?.insertCommand(item.command)) {
+        if (execute) void window.api.sessions.writeCommand(sessionId, '\r').catch((error) => showError(errorMessage(error)))
+        return
+      }
+      void window.api.sessions.writeCommand(sessionId, execute ? `${item.command}\r` : item.command).catch((error) => showError(errorMessage(error)))
+    })
+  }
+
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent): void => {
       if (event.key === 'F1' && !document.querySelector('.modal-backdrop, .help-backdrop')) {
@@ -517,6 +552,12 @@ export function App(): React.JSX.Element {
       }
       if (document.querySelector('.modal-backdrop, .help-backdrop')) return
       const commandKey = window.api.platform === 'darwin' ? event.metaKey : event.ctrlKey
+      if (commandKey && event.shiftKey && event.key.toLowerCase() === 'p') {
+        event.preventDefault()
+        event.stopPropagation()
+        setCommandsDialog(true)
+        return
+      }
       if (commandKey && event.shiftKey && event.key.toLowerCase() === 't' && activeBookmark) {
         event.preventDefault()
         event.stopPropagation()
@@ -709,13 +750,14 @@ export function App(): React.JSX.Element {
               <button role="tab" title={t('app.files')} aria-selected={workspaceView === 'files'} className={workspaceView === 'files' ? 'active' : ''} onClick={() => setWorkspaceView('files')}><FolderOpen size={15} />{t('app.files')}</button>
             </div><div className="session-actions">
             {workspaceView === 'files' && activeBookmark && activeTab?.sessionId && <button className="secondary-button" title={t('app.deploy')} onClick={() => setDeploymentDialog(true)}><Rocket size={15} />{t('app.deploy')}</button>}
+            {workspaceView === 'terminal' && activeBookmark && <button className="secondary-button" title={t('savedCommands.shortcutHint')} onClick={() => setCommandsDialog(true)}><BookMarked size={15} />{t('app.savedCommands')}</button>}
             {workspaceView === 'terminal' && activeBookmark && <button className="secondary-button" title={t('app.aiCommand')} onClick={() => setAiDialog(true)}><WandSparkles size={15} />{t('app.aiCommand')}</button>}
             {activeTab?.status === 'connected' && activeTab.sessionId && <button className="secondary-button" title={t('app.portForwarding')} onClick={() => setTunnelDialog(true)}><Network size={15} />{t('app.portForwarding')}</button>}
             {activeTab?.status === 'connected' && <button className="secondary-button" title={t('app.disconnect')} onClick={() => activeTab.sessionId && void window.api.sessions.disconnect(activeTab.sessionId).catch((error) => showError(errorMessage(error)))}><Power size={15} />{t('app.disconnect')}</button>}
           </div></div>
           <div className="session-stack">
             {tabs.map((tab) => { const bookmark = bookmarkMap.get(tab.bookmarkId); const reconnect = bookmark ? () => openBookmark(bookmark, { tabKey: tab.key }) : undefined; return <div key={tab.key} className={`session-view ${tab.key === activeKey ? 'active' : ''} ${workspaceView}`}>
-              <div className="terminal-region"><TerminalPane ref={(pane) => { if (pane) terminalPaneRefs.current.set(tab.key, pane); else terminalPaneRefs.current.delete(tab.key) }} sessionId={tab.sessionId} connected={tab.status === 'connected'} visible={tab.key === activeKey && workspaceView === 'terminal'} settings={terminalSettings} backgroundImage={terminalBackground} onConnect={reconnect} onOpenSettings={() => openSettings('terminal')} /></div>
+              <div className="terminal-region"><TerminalPane ref={(pane) => { if (pane) terminalPaneRefs.current.set(tab.key, pane); else terminalPaneRefs.current.delete(tab.key) }} sessionId={tab.sessionId} connected={tab.status === 'connected'} visible={tab.key === activeKey && workspaceView === 'terminal'} settings={terminalSettings} backgroundImage={terminalBackground} onConnect={reconnect} onOpenSettings={() => openSettings('terminal')} onOpenSavedCommands={() => setCommandsDialog(true)} /></div>
               <div className="sftp-region"><SftpPane sessionId={tab.sessionId} bookmarkId={tab.bookmarkId} connected={tab.status === 'connected'} visible={tab.key === activeKey && workspaceView === 'files'} onError={showError} onConnect={reconnect} /></div>
             </div> })}
           </div>
@@ -748,6 +790,7 @@ export function App(): React.JSX.Element {
     {conflict && <ConflictDialog conflict={conflict} onDecision={(resolution, apply) => { window.api.transfers.resolveConflict(conflict.taskId, resolution, apply); setConflict(null) }} />}
     {settingsDialog && <SettingsDialog initialSection={settingsInitialSection} settings={terminalSettings} backgroundImage={terminalBackground} appIcons={appIcons} uiTheme={uiTheme} appLanguage={savedLanguage} aiSettings={aiSettings} onAiSettingsChange={setAiSettings} onThemePreview={setUiThemePreview} onLanguagePreview={setLanguage} onClose={() => { setUiThemePreview(null); setLanguage(savedLanguage); setSettingsDialog(false) }} onSave={(settings, image, icon, theme, appLanguage, ai) => void saveSettings(settings, image, icon, theme, appLanguage, ai)} onConfirm={confirmAction} onNotice={(message) => showToast(message, 'success')} onError={showError} raised={deploymentDialog} />}
     {aiDialog && activeBookmark && activeTab && <AiCommandDialog bookmark={activeBookmark} sessionId={activeTab.sessionId} connected={activeTab.status === 'connected'} settings={aiSettings} getTerminalContext={() => terminalPaneRefs.current.get(activeTab.key)?.getRecentLines(aiTerminalContextLines, aiTerminalContextChars) ?? ''} onSettingsChange={setAiSettings} onSettings={() => { setAiDialog(false); openSettings('ai') }} onClose={() => setAiDialog(false)} onError={showError} />}
+    {commandsDialog && <SavedCommandsDialog commands={savedCommands} connected={activeTab?.status === 'connected'} onUse={useSavedCommand} onSave={saveSavedCommand} onRemove={removeSavedCommand} onClose={() => setCommandsDialog(false)} onConfirm={confirmAction} onError={showError} />}
     {helpDialog && <HelpDialog onClose={() => setHelpDialog(false)} />}
     {deploymentDialog && activeBookmark && activeTab?.sessionId && <DeploymentDialog bookmark={activeBookmark} sessionId={activeTab.sessionId} aiSettings={aiSettings} onOpenAiSettings={() => openSettings('ai')} onClose={() => setDeploymentDialog(false)} onConfirm={confirmAction} onNotice={(message) => showToast(message, 'success')} onError={showError} />}
     {tunnelDialog && activeBookmark && activeTab?.sessionId && <TunnelDialog bookmark={activeBookmark} sessionId={activeTab.sessionId} onClose={() => setTunnelDialog(false)} onError={showError} />}
@@ -1135,6 +1178,143 @@ function DeploymentImportDialog({ bundle, target, onClose, onImported, onError }
     </div>)}</div>
     {error && <p className="deployment-result-error" role="alert">{error}</p>}
     <div className="dialog-actions"><button type="button" className="secondary-button" onClick={onClose}>{t('common.cancel')}</button><button type="button" className="primary-button" disabled={!canImport || loading} onClick={() => void importTasks()}>{loading ? t('app.importing') : t('deployment.importSelected', { count: selected.size })}</button></div>
+  </div></Modal>
+}
+
+function previewSavedCommand(command: string): string {
+  const [first = '', ...rest] = command.split('\n')
+  return rest.some((line) => line.trim()) ? `${first} ⏎` : first
+}
+
+function SavedCommandsDialog({ commands, connected, onUse, onSave, onRemove, onClose, onConfirm, onError }: { commands: SavedCommand[]; connected: boolean; onUse(item: SavedCommand, execute: boolean): void; onSave(input: SavedCommandInput): Promise<SavedCommand | undefined>; onRemove(id: string): Promise<void>; onClose(): void; onConfirm: ConfirmAction; onError(message: string): void }): React.JSX.Element {
+  const { t } = useI18n()
+  const [query, setQuery] = useState('')
+  const [groupFilter, setGroupFilter] = useState('')
+  const [selected, setSelected] = useState(0)
+  const [form, setForm] = useState<SavedCommandInput | null>(null)
+  const [error, setError] = useState('')
+  const [busy, setBusy] = useState(false)
+  const searchInput = useRef<HTMLInputElement>(null)
+  const list = useRef<HTMLDivElement>(null)
+
+  useEffect(() => { if (!form) searchInput.current?.focus() }, [form])
+
+  const groups = useMemo(() => [...new Set(commands.map((item) => item.group).filter(Boolean))].sort((left, right) => left.localeCompare(right)), [commands])
+  const filtered = useMemo(() => {
+    const tokens = query.toLocaleLowerCase().split(/\s+/).filter(Boolean)
+    return commands.filter((item) => {
+      if (groupFilter && item.group !== groupFilter) return false
+      if (!tokens.length) return true
+      const haystack = `${item.name}\n${item.command}\n${item.description}\n${item.group}`.toLocaleLowerCase()
+      return tokens.every((token) => haystack.includes(token))
+    })
+  }, [commands, groupFilter, query])
+
+  useEffect(() => { setSelected(0) }, [query, groupFilter])
+  useEffect(() => { if (selected >= filtered.length) setSelected(Math.max(0, filtered.length - 1)) }, [filtered.length, selected])
+  useEffect(() => {
+    list.current?.querySelector<HTMLElement>(`[data-command-index="${selected}"]`)?.scrollIntoView({ block: 'nearest' })
+  }, [selected])
+
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent): void => {
+      if (event.key !== 'Escape') return
+      if (document.querySelector('.modal-backdrop.raised')) return
+      event.preventDefault()
+      event.stopPropagation()
+      if (form) setForm(null)
+      else onClose()
+    }
+    window.addEventListener('keydown', onKeyDown, true)
+    return () => window.removeEventListener('keydown', onKeyDown, true)
+  }, [form, onClose])
+
+  const runItem = (item: SavedCommand | undefined, execute: boolean): void => {
+    if (!item) return
+    if (!connected) { onError(t('savedCommands.notConnected')); return }
+    onUse(item, execute)
+  }
+
+  const openForm = (item?: SavedCommand): void => {
+    setError('')
+    setForm(item
+      ? { id: item.id, name: item.name, command: item.command, description: item.description, group: item.group }
+      : { name: '', command: query.trim(), description: '', group: groupFilter })
+  }
+
+  const submit = async (): Promise<void> => {
+    if (!form) return
+    if (!form.command.trim()) { setError(t('savedCommands.required')); return }
+    setBusy(true)
+    const saved = await onSave(form)
+    setBusy(false)
+    if (!saved) return
+    setForm(null)
+    setQuery('')
+  }
+
+  const removeCommand = async (item: SavedCommand): Promise<void> => {
+    const accepted = await onConfirm({ title: t('savedCommands.delete'), message: t('savedCommands.deleteConfirm', { value0: item.name }), kind: 'danger', confirmLabel: t('savedCommands.delete') })
+    if (!accepted) return
+    setBusy(true)
+    await onRemove(item.id)
+    setBusy(false)
+    setForm(null)
+  }
+
+  if (form) return <Modal title={form.id ? t('savedCommands.editTitle') : t('savedCommands.create')} onClose={() => setForm(null)} wide className="saved-command-form-modal"><div className="saved-command-editor">
+    <label>{t('savedCommands.name')}<input value={form.name} maxLength={80} placeholder={t('savedCommands.namePlaceholder')} onChange={(event) => setForm((current) => current ? { ...current, name: event.target.value } : current)} /></label>
+    <label>{t('savedCommands.command')}<textarea className="saved-command-input" rows={4} autoFocus spellCheck={false} value={form.command} placeholder={t('savedCommands.commandPlaceholder')} onChange={(event) => setForm((current) => current ? { ...current, command: event.target.value } : current)} /></label>
+    <div className="saved-command-editor-row">
+      <label>{t('savedCommands.description')}<input value={form.description} maxLength={500} placeholder={t('savedCommands.descriptionPlaceholder')} onChange={(event) => setForm((current) => current ? { ...current, description: event.target.value } : current)} /></label>
+      <label>{t('savedCommands.group')}<input list="saved-command-group-options" value={form.group} maxLength={40} placeholder={t('savedCommands.groupPlaceholder')} onChange={(event) => setForm((current) => current ? { ...current, group: event.target.value } : current)} /><datalist id="saved-command-group-options">{groups.map((name) => <option key={name} value={name} />)}</datalist></label>
+    </div>
+    {error && <p className="saved-command-error" role="alert">{error}</p>}
+    <div className="dialog-actions saved-command-editor-actions">
+      {form.id && <button className="danger-button" disabled={busy} onClick={() => { const item = commands.find((entry) => entry.id === form.id); if (item) void removeCommand(item) }}><Trash2 size={15} />{t('savedCommands.delete')}</button>}
+      <button className="secondary-button" disabled={busy} onClick={() => setForm(null)}>{t('common.cancel')}</button>
+      <button className="primary-button" disabled={busy} onClick={() => void submit()}>{t('common.save')}</button>
+    </div>
+  </div></Modal>
+
+  const active = filtered[selected]
+  return <Modal title={t('app.savedCommands')} onClose={onClose} wide className="saved-commands-modal"><div className="saved-commands">
+    <div className="saved-commands-search">
+      <Search size={15} />
+      <input ref={searchInput} value={query} aria-label={t('savedCommands.search')} placeholder={t('savedCommands.search')} onChange={(event) => setQuery(event.target.value)} onKeyDown={(event) => {
+        if (event.key === 'ArrowDown') { event.preventDefault(); setSelected((current) => filtered.length ? (current + 1) % filtered.length : 0) }
+        else if (event.key === 'ArrowUp') { event.preventDefault(); setSelected((current) => filtered.length ? (current - 1 + filtered.length) % filtered.length : 0) }
+        else if (event.key === 'Enter') { event.preventDefault(); if (active) runItem(active, event.metaKey || event.ctrlKey); else if (query.trim()) openForm() }
+        else if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'n') { event.preventDefault(); openForm() }
+      }} />
+      <button type="button" className="secondary-button" onClick={() => openForm()}><CirclePlus size={15} />{t('savedCommands.create')}</button>
+    </div>
+    {groups.length > 0 && <div className="saved-commands-groups" role="group" aria-label={t('savedCommands.group')}>
+      <button type="button" className={groupFilter ? '' : 'active'} onClick={() => setGroupFilter('')}>{t('savedCommands.all')}</button>
+      {groups.map((name) => <button type="button" key={name} className={groupFilter === name ? 'active' : ''} onClick={() => setGroupFilter(name)}>{name}</button>)}
+    </div>}
+    <div className="saved-commands-list" ref={list}>
+      {filtered.length === 0 ? <div className="saved-commands-empty">
+        <strong>{query.trim() ? t('savedCommands.noMatch') : t('savedCommands.empty')}</strong>
+        <p>{t('savedCommands.emptyHint')}</p>
+        <button type="button" className="secondary-button" onClick={() => openForm()}><CirclePlus size={15} />{query.trim() ? t('savedCommands.saveFromQuery', { value0: query.trim() }) : t('savedCommands.create')}</button>
+      </div> : filtered.map((item, index) => <div key={item.id} data-command-index={index} className={`saved-command-row ${index === selected ? 'active' : ''}`} onMouseMove={() => { if (index !== selected) setSelected(index) }}>
+        <button type="button" className="saved-command-main" onClick={() => runItem(item, false)} title={item.command}>
+          <span className="saved-command-heading"><strong>{item.name}</strong>{item.group && <span className="saved-command-group">{item.group}</span>}</span>
+          <code>{previewSavedCommand(item.command)}</code>
+          {item.description && <small>{item.description}</small>}
+        </button>
+        <span className="saved-command-actions">
+          <button type="button" className="icon-button" title={t('savedCommands.insert')} aria-label={t('savedCommands.insert')} onClick={() => runItem(item, false)}><CornerDownLeft size={14} /></button>
+          <button type="button" className="icon-button" title={t('savedCommands.run')} aria-label={t('savedCommands.run')} onClick={() => runItem(item, true)}><Play size={14} /></button>
+          <button type="button" className="icon-button" title={t('savedCommands.edit')} aria-label={t('savedCommands.edit')} onClick={() => openForm(item)}><Edit3 size={14} /></button>
+        </span>
+      </div>)}
+    </div>
+    <footer className="saved-commands-footer">
+      <span>{t('savedCommands.insertHint')} · {t('savedCommands.runHint')}</span>
+      {active && active.useCount > 0 && <span className="saved-command-usage">{t('savedCommands.useCount', { value0: active.useCount })}</span>}
+    </footer>
   </div></Modal>
 }
 

@@ -196,6 +196,26 @@ export interface DeploymentRun {
   hookError?: string
 }
 
+export interface SavedCommand {
+  id: string
+  name: string
+  command: string
+  description: string
+  group: string
+  useCount: number
+  lastUsedAt: string
+  createdAt: string
+  updatedAt: string
+}
+
+export interface SavedCommandInput {
+  id?: string
+  name: string
+  command: string
+  description: string
+  group: string
+}
+
 export type TerminalBackgroundFit = 'cover' | 'contain' | 'stretch' | 'tile'
 export interface WebApiConfig {
   enabled: boolean
@@ -435,6 +455,7 @@ export interface AppApi {
   }
   files: {
     home(): Promise<string>
+    roots(): Promise<string[]>
     parentLocal(path: string): Promise<string>
     remoteHome(sessionId: string): Promise<string>
     listLocal(path: string): Promise<DirectoryEntry[]>
@@ -499,6 +520,12 @@ export interface AppApi {
     clearHistory(): Promise<void>
     getLastExchange(): Promise<AiRawExchange | null>
     clearLastExchange(): Promise<void>
+  }
+  savedCommands: {
+    list(): Promise<SavedCommand[]>
+    save(input: SavedCommandInput): Promise<SavedCommand>
+    remove(id: string): Promise<void>
+    touch(id: string): Promise<SavedCommand>
   }
   state: {
     getSidebarCollapsed(): Promise<boolean>

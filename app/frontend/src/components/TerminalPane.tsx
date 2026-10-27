@@ -3,7 +3,7 @@ import { Terminal, type IBufferLine } from '@xterm/xterm'
 import { FitAddon } from '@xterm/addon-fit'
 import { WebLinksAddon } from '@xterm/addon-web-links'
 import { WebglAddon } from '@xterm/addon-webgl'
-import { ChevronDown, ChevronUp, ClipboardPaste, Copy, Palette, Plug, Search, X } from 'lucide-react'
+import { BookMarked, ChevronDown, ChevronUp, ClipboardPaste, Copy, Palette, Plug, Search, X } from 'lucide-react'
 import type { TerminalSettings } from '../types'
 import { colorWithOpacity, terminalBackgroundStyle } from '../terminal-style'
 import { useI18n } from '../i18n'
@@ -67,6 +67,7 @@ function recentTerminalText(term: Terminal, maxLines: number, maxChars: number):
 
 export interface TerminalPaneHandle {
   getRecentLines(maxLines: number, maxChars: number): string
+  insertCommand(text: string): boolean
 }
 
 interface TerminalPaneProps {
@@ -77,9 +78,10 @@ interface TerminalPaneProps {
   backgroundImage: string
   onConnect?: () => void
   onOpenSettings?: () => void
+  onOpenSavedCommands?: () => void
 }
 
-export const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>(function TerminalPane({ sessionId, connected, visible, settings, backgroundImage, onConnect, onOpenSettings }, ref): React.JSX.Element {
+export const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>(function TerminalPane({ sessionId, connected, visible, settings, backgroundImage, onConnect, onOpenSettings, onOpenSavedCommands }, ref): React.JSX.Element {
   const { t } = useI18n()
   const container = useRef<HTMLDivElement>(null)
   const terminal = useRef<Terminal | null>(null)
@@ -101,7 +103,14 @@ export const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>(fu
   const rendererBackground = settings.backgroundImagePath && backgroundImage ? 'rgba(0, 0, 0, 0)' : colorWithOpacity(settings.backgroundColor, settings.backgroundOpacity)
 
   useImperativeHandle(ref, () => ({
-    getRecentLines: (maxLines, maxChars) => terminal.current ? recentTerminalText(terminal.current, maxLines, maxChars) : ''
+    getRecentLines: (maxLines, maxChars) => terminal.current ? recentTerminalText(terminal.current, maxLines, maxChars) : '',
+    insertCommand: (text) => {
+      const term = terminal.current
+      if (!term || !sessionIdRef.current) return false
+      term.paste(text)
+      term.focus()
+      return true
+    }
   }), [])
 
   useEffect(() => {
@@ -324,6 +333,7 @@ export const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>(fu
     {contextMenu && <div className="sidebar-context-menu terminal-context-menu" role="menu" style={{ left: contextMenu.x, top: contextMenu.y }} onPointerDown={(event) => event.stopPropagation()}>
       <button role="menuitem" disabled={!contextMenu.hasSelection} onClick={() => { const text = terminal.current?.getSelection(); setContextMenu(null); if (text) void window.api.system.writeClipboard(text).catch((error) => console.warn('Failed to copy terminal selection', error)) }}><Copy size={15} />{t('common.copy')}</button>
       <button role="menuitem" onClick={() => { setContextMenu(null); void window.api.system.readClipboard().then((text) => { terminal.current?.paste(text); terminal.current?.focus() }).catch((error) => console.warn('Failed to paste into terminal', error)) }}><ClipboardPaste size={15} />{t('terminal.paste')}</button>
+      <button role="menuitem" onClick={() => { setContextMenu(null); onOpenSavedCommands?.() }}><BookMarked size={15} />{t('app.savedCommands')}</button>
       <button role="menuitem" onClick={() => { setContextMenu(null); setSearchOpen(true) }}><Search size={15} />{t('terminal.search')}</button>
       <div className="context-menu-separator" />
       <button role="menuitem" onClick={() => { setContextMenu(null); onOpenSettings?.() }}><Palette size={15} />{t('terminal.appearanceSettings')}</button>

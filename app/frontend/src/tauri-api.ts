@@ -69,6 +69,7 @@ export async function createTauriApi(): Promise<AppApi> {
     },
     files: {
       home: () => call('files_home'),
+      roots: () => call('files_roots'),
       parentLocal: (path) => call('files_parent_local', { path }),
       remoteHome: (sessionId) => call('files_remote_home', { sessionId }),
       listLocal: (path) => call('files_list_local', { path }),
@@ -131,6 +132,12 @@ export async function createTauriApi(): Promise<AppApi> {
       clearHistory: () => call('ai_command_history_clear'),
       getLastExchange: () => call('ai_diagnostics_get'),
       clearLastExchange: () => call('ai_diagnostics_clear')
+    },
+    savedCommands: {
+      list: () => call('saved_commands_list'),
+      save: (input) => call('saved_commands_save', { input }),
+      remove: (id) => call('saved_commands_remove', { id }),
+      touch: (id) => call('saved_commands_touch', { id })
     },
     state: {
       getSidebarCollapsed: () => call('state_get_sidebar_collapsed'),

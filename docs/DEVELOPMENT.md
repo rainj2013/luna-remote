@@ -245,6 +245,8 @@ Apple 在客户端 30 分钟等待超时后仍会继续处理。不要点击原�
 
 Secrets 会由 GitHub 加密存储，但不能防御有权修改受信任发布工作流的人恶意读取凭据。应限制仓库写权限和发布分支、标签的修改权限，审查工作流及其调用脚本的变更。macOS job 中的第三方 Actions 固定到提交 SHA。不要在含凭据的步骤开启 shell tracing 或打印环境变量。签名产物中的开发者名称、Team ID 和公钥证书是公开信息，签名私钥和 API 私钥不应出现在产物中。
 
+GitHub 托管 macOS 构建机在下载公证票据前禁用出站 UDP 443，使 Apple 票据工具使用 HTTPS/TCP，绕过已确认的 [HTTP/3 连接中断问题](https://github.com/actions/runner-images/issues/14924#issuecomment-6188826956)。规则仅作用于临时构建机，TLS 证书校验保持开启。
+
 ## 常见问题
 
 ### 配置 Cargo 国内镜像

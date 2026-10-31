@@ -110,6 +110,14 @@ jobs:
           compression-level: 0
           retention-days: 14
 
+      - name: Use HTTPS over TCP for Apple ticket delivery
+        shell: bash
+        run: |
+          # GitHub-hosted runner HTTP/3 workaround; TLS verification stays enabled.
+          # https://github.com/actions/runner-images/issues/14924#issuecomment-6188826956
+          echo "block return out quick proto udp from any to any port 443" | sudo pfctl -f -
+          sudo pfctl -E
+
       - name: Wait for Apple and finalize DMG
         shell: bash
         env:

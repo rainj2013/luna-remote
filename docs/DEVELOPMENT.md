@@ -205,7 +205,45 @@ git tag v1.0.0
 git push origin v1.0.0
 ```
 
-macOS 安装包使用 ad-hoc 签名，不需要 Apple 开发者证书。它没有经过 Apple 公证，用户首次运行时仍需在“隐私与安全性”设置中确认。Windows 安装包没有代码签名，系统可能显示未知发布者或 SmartScreen 提示。
+macOS 发布安装包使用 Developer ID Application 签名，并经过 Apple 公证。工作流在签名、票据与 Gatekeeper 验证通过后上传全部四个安装包，发布已有草稿并保留发布说明。Windows 安装包尚未签名，仍可能出现未知发布者或 SmartScreen 提示。
+
+### macOS 签名凭据
+
+在仓库 **Settings → Environments** 创建 `macos-release` 环境，将部署来源限制为 `master` 分支和 `v*` 标签（分别添加 Branch 和 Tag 规则）。手动构建请选择 `master`。在该环境添加以下 Secrets，勿放进仓库文件、普通 Variables、Issue 或日志：
+
+| Secret | 内容 |
+| --- | --- |
+| `APPLE_CERTIFICATE` | 包含 Developer ID Application 证书及其私钥的加密 `.p12` 文件，以 Base64 编码 |
+| `APPLE_CERTIFICATE_PASSWORD` | 上述 `.p12` 的导出密码 |
+| `APPLE_SIGNING_IDENTITY` | 完整证书名称，例如 `Developer ID Application: Your Name (TEAMID)` |
+| `APPLE_API_KEY` | App Store Connect **个人密钥**的 Key ID |
+| `APPLE_API_PRIVATE_KEY` | 该个人密钥 `.p8` 文件的完整文本 |
+
+从钥匙串导出证书和私钥为带密码的 `.p12`，在仓库之外生成 Base64 文件，并通过标准输入设置 Secrets，避免把内容放进命令参数或终端输出。例如，假设文件都位于 `~/keys`：
+
+```bash
+openssl base64 -A -in ~/keys/DeveloperIDApplication.p12 -out ~/keys/certificate-base64.txt
+gh secret set APPLE_CERTIFICATE --env macos-release < ~/keys/certificate-base64.txt
+gh secret set APPLE_CERTIFICATE_PASSWORD --env macos-release
+gh secret set APPLE_SIGNING_IDENTITY --env macos-release
+gh secret set APPLE_API_KEY --env macos-release
+gh secret set APPLE_API_PRIVATE_KEY --env macos-release < ~/keys/ApiKey_EXAMPLE.p8
+gh secret list --env macos-release
+```
+
+无重定向的 `gh secret set` 命令会交互式读取值。`gh secret list` 只显示名称和更新时间，不显示内容。Base64 只是编码，不是加密；本地文件也应仅允许当前用户读取。
+
+工作流先安装依赖、完成编译，再由 `scripts/release-macos.sh` 在 `$RUNNER_TEMP` 中临时恢复凭据，导入独立钥匙串并打包。当前流程针对个人 API 密钥，显式选择 Xcode 26.3（个人密钥需要 Xcode 26 或更新版本），不传 Issuer ID；Tauri 内置的团队密钥公证路径不参与。提交后立即保存 `notarization-pending-macos-<arch>` Actions 产物，包含原始签名 DMG、保留权限的应用归档和带原提交编号、源码版本、文件 SHA-256 的清单，保留 14 天，不含任何私钥。保存成功后才开始等待公证。Apple 接受后，在工作副本中装订票据并验证，只将最终 DMG 用作 Release 安装包。退出、失败或取消时清理临时钥匙串、`.p12` 和 `.p8`；凭据不进入缓存或上传产物。
+
+### 公证超时后恢复
+
+Apple 在客户端 30 分钟等待超时后仍会继续处理。不要点击原构建的 Re-run jobs：如果已有签名检查点，工作流会阻止重新编译和提交。
+
+在 Actions 中选择 **Resume macOS notarization → Run workflow**，工作流分支选 `master`，填入原始 `Build and Release` 的运行 ID 与发布标签（例如 `v1.3.1`）。恢复流程会校验原任务来自本仓库的标签推送、标签仍指向原提交，并校验检查点文件哈希；随后下载原包，只查询和等待原公证编号。无需签名证书或 `.p12`，不会重新编译、重签或再次提交。两种 macOS 包均通过后复用原 Windows 产物，上传四个安装包并发布已有草稿，保留发布说明。
+
+如果 Apple 仍未处理完成，可以稍后再次运行恢复工作流，继续使用同一原始运行 ID；原检查点不会被修改。恢复能力以检查点产物已保存成功为前提；若 Apple 已接收提交但检查点保存失败，应先核对原提交，不要自动重新投递。标签变动、文件被篡改、检查点过期或缺失时会停止。未保存检查点的旧版工作流无法事后恢复原始签名文件，不能仅靠提交编号为另一次构建的文件装订票据。
+
+Secrets 会由 GitHub 加密存储，但不能防御有权修改受信任发布工作流的人恶意读取凭据。应限制仓库写权限和发布分支、标签的修改权限，审查工作流及其调用脚本的变更。macOS job 中的第三方 Actions 固定到提交 SHA。不要在含凭据的步骤开启 shell tracing 或打印环境变量。签名产物中的开发者名称、Team ID 和公钥证书是公开信息，签名私钥和 API 私钥不应出现在产物中。
 
 ## 常见问题
 

@@ -6,3 +6,10 @@ app/native/gen/schemas/
 .vite/
 *.log
 .DS_Store
+
+# Signing credentials stay outside the repository.
+*.p8
+*.p12
+*.pfx
+*.key.pem
+__pycache__/

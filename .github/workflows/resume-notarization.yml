@@ -49,7 +49,9 @@ jobs:
       matrix:
         include:
           - arch: x64
-            runner: macos-15-intel
+            # Finalization verifies and staples saved bytes without running the app.
+            # Use the Apple Silicon pool for both architectures.
+            runner: macos-15
             target: x86_64-apple-darwin
           - arch: arm64
             runner: macos-15

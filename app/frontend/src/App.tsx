@@ -78,6 +78,7 @@ export function App(): React.JSX.Element {
   const [activeKey, setActiveKey] = useState('')
   const [query, setQuery] = useState('')
   const [bookmarkDialog, setBookmarkDialog] = useState<Bookmark | 'new' | null>(null)
+  const [newBookmarkGroup, setNewBookmarkGroup] = useState('')
   const [authRequest, setAuthRequest] = useState<{ bookmark: Bookmark; target: ConnectionTarget } | null>(null)
   const [hostPrompts, setHostPrompts] = useState<HostKeyPrompt[]>([])
   const [conflict, setConflict] = useState<{ taskId: string; sourcePath: string; destinationPath: string } | null>(null)
@@ -88,6 +89,7 @@ export function App(): React.JSX.Element {
   const [collapsedBookmarkGroups, setCollapsedBookmarkGroups] = useState<Set<string>>(new Set())
   const [bookmarkGroupNames, setBookmarkGroupNames] = useState<string[]>([])
   const [selectedBookmarkId, setSelectedBookmarkId] = useState('')
+  const [selectedGroupName, setSelectedGroupName] = useState<string | null>(null)
   const [draggedBookmarkId, setDraggedBookmarkId] = useState('')
   const [bookmarkDrop, setBookmarkDrop] = useState<{ id: string; position: 'before' | 'after' } | null>(null)
   const [draggedGroupName, setDraggedGroupName] = useState<string | null>(null)
@@ -136,6 +138,20 @@ export function App(): React.JSX.Element {
     const [items, groups] = await Promise.all([window.api.bookmarks.list(), window.api.bookmarkGroups.list()])
     setBookmarks(items)
     setBookmarkGroupNames(groups)
+  }
+  const bookmarkSaved = async (group?: string): Promise<void> => {
+    const created = bookmarkDialog === 'new'
+    setBookmarkDialog(null)
+    await reloadSidebarData()
+    if (group === undefined) return
+    if (created) setSelectedGroupName(group)
+    setCollapsedBookmarkGroups((current) => {
+      if (!current.has(group)) return current
+      const next = new Set(current)
+      next.delete(group)
+      void window.api.state.setCollapsedBookmarkGroups([...next]).catch((error) => showError(errorMessage(error)))
+      return next
+    })
   }
 
   useEffect(() => {
@@ -230,7 +246,13 @@ export function App(): React.JSX.Element {
   const bookmarkMap = useMemo(() => new Map(bookmarks.map((item) => [item.id, item])), [bookmarks])
   const activeTab = tabs.find((tab) => tab.key === activeKey)
   const activeBookmark = activeTab ? bookmarkMap.get(activeTab.bookmarkId) : undefined
-  const selectedBookmark = bookmarkMap.get(selectedBookmarkId) ?? activeBookmark
+  const selectedBookmark = selectedGroupName === null ? bookmarkMap.get(selectedBookmarkId) ?? activeBookmark : undefined
+  const currentBookmarkGroup = selectedGroupName ?? selectedBookmark?.groupName ?? ''
+  const selectBookmark = (id: string): void => { setSelectedGroupName(null); setSelectedBookmarkId(id) }
+  const openNewBookmark = (group = currentBookmarkGroup): void => {
+    setNewBookmarkGroup(group)
+    setBookmarkDialog('new')
+  }
   const filteredBookmarks = bookmarks.filter((item) => `${item.name} ${item.host} ${item.username} ${item.groupName} ${item.note}`.toLowerCase().includes(query.toLowerCase()))
   const bookmarkGroups = useMemo(() => {
     const groups = new Map(bookmarkGroupNames.map((group) => [group, [] as Bookmark[]]))
@@ -301,7 +323,7 @@ export function App(): React.JSX.Element {
       if (!current.active) {
         current.active = true
         document.body.classList.add('sidebar-item-dragging')
-        if (current.type === 'bookmark') { setSelectedBookmarkId(current.value); setDraggedBookmarkId(current.value) }
+        if (current.type === 'bookmark') { selectBookmark(current.value); setDraggedBookmarkId(current.value) }
         else setDraggedGroupName(current.value)
       }
       moveEvent.preventDefault()
@@ -373,17 +395,22 @@ export function App(): React.JSX.Element {
   const openSidebarContextMenu = (event: React.MouseEvent, options: Omit<SidebarContextMenu, 'x' | 'y'> = {}): void => {
     event.preventDefault()
     event.stopPropagation()
-    if (options.bookmark) setSelectedBookmarkId(options.bookmark.id)
+    if (options.bookmark) selectBookmark(options.bookmark.id)
+    else if (options.group !== undefined) setSelectedGroupName(options.group)
     setSidebarContextMenu({ x: Math.max(4, Math.min(event.clientX, window.innerWidth - 210)), y: Math.max(4, Math.min(event.clientY, window.innerHeight - 340)), ...options })
   }
 
   const saveGroup = async (name: string): Promise<void> => {
     if (!groupDialog) return
     try {
-      if (groupDialog.mode === 'create') setBookmarkGroupNames(await window.api.bookmarkGroups.create(name))
+      if (groupDialog.mode === 'create') {
+        setBookmarkGroupNames(await window.api.bookmarkGroups.create(name))
+        setSelectedGroupName(name.trim())
+      }
       else {
         const oldGroup = groupDialog.group ?? ''
         setBookmarkGroupNames(await window.api.bookmarkGroups.rename(oldGroup, name))
+        setSelectedGroupName((current) => current === oldGroup ? name.trim() : current)
         setCollapsedBookmarkGroups((current) => {
           if (!current.has(oldGroup)) return current
           const next = new Set(current)
@@ -474,6 +501,7 @@ export function App(): React.JSX.Element {
       const deleted = new Set(result.deletedBookmarkIds)
       for (const tab of tabs.filter((item) => deleted.has(item.bookmarkId))) closeTab(tab)
       setBookmarkGroupNames(result.groups)
+      setSelectedGroupName((current) => current === group ? null : current)
       setBookmarks((current) => current.filter((bookmark) => !deleted.has(bookmark.id)))
       setSelectedBookmarkId((current) => deleted.has(current) ? '' : current)
       setCollapsedBookmarkGroups((current) => {
@@ -627,7 +655,7 @@ export function App(): React.JSX.Element {
     if (event.type !== 'menu-command') return
     const modalOpen = Boolean(document.querySelector('.modal-backdrop, .help-backdrop'))
     if (modalOpen) return
-    if (event.payload === 'new-connection') setBookmarkDialog('new')
+    if (event.payload === 'new-connection') openNewBookmark()
     else if (event.payload === 'import-connections') void chooseSshConfig()
     else if (event.payload === 'new-session' && activeBookmark) openBookmark(activeBookmark, { newSession: true })
     else if (event.payload === 'close-tab' && activeTab) closeTab(activeTab)
@@ -636,7 +664,7 @@ export function App(): React.JSX.Element {
     else if (event.payload === 'show-terminal' && tabs.length) setWorkspaceView('terminal')
     else if (event.payload === 'show-files' && tabs.length) setWorkspaceView('files')
     else if (event.payload === 'toggle-sidebar') setSidebarCollapsed((collapsed) => !collapsed)
-  }), [activeBookmark, activeTab, tabs, bookmarks])
+  }), [activeBookmark, activeTab, tabs, bookmarks, currentBookmarkGroup])
 
   const saveSidebarWidth = (width: number): void => {
     const next = clampSidebarWidth(width)
@@ -707,28 +735,38 @@ export function App(): React.JSX.Element {
     <div className={`main-layout ${sidebarCollapsed ? 'sidebar-collapsed' : ''}`} style={{ '--sidebar-width': `${sidebarWidth}px` } as React.CSSProperties}>
       <aside className="sidebar" onContextMenu={(event) => openSidebarContextMenu(event)}>
         <div className="sidebar-heading"><strong>{t('app.connections')}</strong><div className="sidebar-actions">
-          <button className="icon-button" title={t('common.newConnection')} onClick={() => setBookmarkDialog('new')}><CirclePlus size={18} /></button>
+          <button className="icon-button" title={t('common.newConnection')} onClick={() => openNewBookmark()}><CirclePlus size={18} /></button>
           <button className="icon-button" title={t('app.deleteSelectedConnection')} disabled={!selectedBookmark} onClick={() => selectedBookmark && void removeBookmark(selectedBookmark)}><Trash2 size={17} /></button>
         </div></div>
         <label className="search-box"><Search size={16} /><input placeholder={t('app.searchConnections')} value={query} onChange={(event) => setQuery(event.target.value)} /></label>
         <div className="bookmark-list">
           {query && filteredBookmarks.length === 0 && <div className="sidebar-empty"><BookmarkIcon size={24} /><span>{t('app.noMatchingConnections')}</span></div>}
-          {bookmarkGroups.flatMap(([group, items]) => {
+          {bookmarkGroups.map(([group, items]) => {
             const collapsed = !query && collapsedBookmarkGroups.has(group)
             const groupDropClass = groupDrop?.group === group ? `drop-${groupDrop.position}` : ''
-            return [<button type="button" data-group-name={group} className={`bookmark-group ${draggedGroupName === group ? 'dragging' : ''} ${groupDropClass}`} key={`group:${group}`} aria-expanded={!collapsed} onPointerDown={(event) => startSidebarPointerDrag(event, 'group', group)} onClick={(event) => { if (suppressSidebarClickRef.current) { event.preventDefault(); return } toggleBookmarkGroup(group) }} onContextMenu={(event) => openSidebarContextMenu(event, { group })}>
-              <span className="group-drag-handle" title={query ? t('common.clearTheSearchToReorder') : t('app.dragToReorderGroup')}><GripVertical size={13} /></span>{collapsed ? <ChevronRight size={13} /> : <ChevronDown size={13} />}{collapsed ? <Folder size={14} /> : <FolderOpen size={14} />}<span>{group || t('common.ungrouped')}</span><small>{items.length}</small>
-            </button>, ...(collapsed ? [] : items.map((bookmark) => {
+            return <section className="bookmark-section" key={`group:${group}`} aria-label={group || t('common.ungrouped')}>
+            <div data-group-name={group} className={`bookmark-group ${selectedGroupName === group ? 'selected' : ''} ${draggedGroupName === group ? 'dragging' : ''} ${groupDropClass}`} onContextMenu={(event) => openSidebarContextMenu(event, { group })}>
+              <button type="button" className="bookmark-group-toggle" aria-expanded={!collapsed} onPointerDown={(event) => startSidebarPointerDrag(event, 'group', group)} onClick={(event) => { if (suppressSidebarClickRef.current) { event.preventDefault(); return } setSelectedGroupName(group); toggleBookmarkGroup(group) }}>
+                <span className="group-drag-handle" title={query ? t('common.clearTheSearchToReorder') : t('app.dragToReorderGroup')}><GripVertical size={13} /></span>{collapsed ? <ChevronRight size={13} /> : <ChevronDown size={13} />}{collapsed ? <Folder size={15} /> : <FolderOpen size={15} />}<span>{group || t('common.ungrouped')}</span><small>{items.length}</small>
+              </button>
+              <button type="button" className="icon-button bookmark-group-add" title={t('common.newConnection')} aria-label={`${t('common.newConnection')} · ${group || t('common.ungrouped')}`} onClick={() => { setSelectedGroupName(group); openNewBookmark(group) }}><CirclePlus size={15} /></button>
+            </div>
+            {!collapsed && <div className="bookmark-group-children" onContextMenu={(event) => openSidebarContextMenu(event, { group })}>
+            {items.map((bookmark) => {
             const tab = tabs.find((item) => item.bookmarkId === bookmark.id)
             const jumpBookmark = bookmark.jumpBookmarkId ? bookmarkMap.get(bookmark.jumpBookmarkId) : undefined
             const dropClass = bookmarkDrop?.id === bookmark.id ? `drop-${bookmarkDrop.position}` : ''
-            return <button key={bookmark.id} data-bookmark-id={bookmark.id} className={`bookmark-item ${selectedBookmark?.id === bookmark.id ? 'active' : ''} ${draggedBookmarkId === bookmark.id ? 'dragging' : ''} ${dropClass}`} onPointerDown={(event) => startSidebarPointerDrag(event, 'bookmark', bookmark.id)} onClick={(event) => { if (suppressSidebarClickRef.current) { event.preventDefault(); return } setSelectedBookmarkId(bookmark.id) }} onDoubleClick={(event) => { if (suppressSidebarClickRef.current) { event.preventDefault(); return } openBookmarkFromSidebar(bookmark) }} onKeyDown={(event) => { if (event.key === 'Enter') { event.preventDefault(); setSelectedBookmarkId(bookmark.id); openBookmarkFromSidebar(bookmark) } }} onContextMenu={(event) => openSidebarContextMenu(event, { bookmark })}>
+            return <button key={bookmark.id} data-bookmark-id={bookmark.id} className={`bookmark-item ${selectedBookmark?.id === bookmark.id ? 'active' : ''} ${draggedBookmarkId === bookmark.id ? 'dragging' : ''} ${dropClass}`} onPointerDown={(event) => startSidebarPointerDrag(event, 'bookmark', bookmark.id)} onClick={(event) => { if (suppressSidebarClickRef.current) { event.preventDefault(); return } selectBookmark(bookmark.id) }} onDoubleClick={(event) => { if (suppressSidebarClickRef.current) { event.preventDefault(); return } openBookmarkFromSidebar(bookmark) }} onKeyDown={(event) => { if (event.key === 'Enter') { event.preventDefault(); selectBookmark(bookmark.id); openBookmarkFromSidebar(bookmark) } }} onContextMenu={(event) => openSidebarContextMenu(event, { bookmark })}>
               <span className="bookmark-drag-handle" title={query ? t('common.clearTheSearchToReorder') : t('app.dragToReorder')}><GripVertical size={14} /></span>
               <span className={`server-icon ${tab?.status ?? 'disconnected'}`}><Server size={17} /></span>
               <span className="bookmark-copy"><strong>{bookmark.name}</strong><small title={jumpBookmark ? t('app.viaValue', { value0: jumpBookmark.name }) : undefined}>{bookmark.username}@{bookmark.host}:{bookmark.port}{jumpBookmark ? t('common.viaValue', { value0: jumpBookmark.name }) : ''}</small></span>
               <span className="bookmark-flags">{bookmark.favorite && <Star size={12} className="favorite-star" fill="currentColor" />}{bookmark.hasSavedCredential && <KeyRound size={12} className="saved-key" />}</span>
             </button>
-          }))]})}
+          })}
+            {items.length === 0 && <div className="bookmark-group-empty">{t('app.empty')}</div>}
+            </div>}
+            </section>
+          })}
         </div>
       </aside>
       <div className="sidebar-resizer" role="separator" aria-label={t('app.resizeSidebar')} aria-orientation="vertical" aria-valuemin={minSidebarWidth} aria-valuemax={maxSidebarWidth} aria-valuenow={sidebarWidth} tabIndex={0} title={t('app.dragToResizeDoubleClickToReset')} onPointerDown={startSidebarResize} onDoubleClick={() => saveSidebarWidth(defaultSidebarWidth)} onKeyDown={resizeSidebarWithKeyboard} />
@@ -738,12 +776,12 @@ export function App(): React.JSX.Element {
             {sidebarCollapsed ? <PanelLeftOpen size={18} /> : <PanelLeftClose size={18} />}
           </button>
           {tabs.map((tab) => { const bookmark = bookmarkMap.get(tab.bookmarkId); const label = tabLabel(tab, bookmark); const endpoint = bookmark ? `${bookmark.username}@${bookmark.host}:${bookmark.port}` : ''; return <div key={tab.key} className={`session-tab ${tab.key === activeKey ? 'active' : ''}`}>
-            <button className="session-tab-select" title={bookmark ? `${label} · ${endpoint}` : label} onClick={() => setActiveKey(tab.key)} onAuxClick={(event) => { if (event.button === 1) closeTab(tab) }}><span className={`status-dot ${tab.status}`} /><span title={label}>{label}</span></button>
+            <button className="session-tab-select" aria-pressed={tab.key === activeKey} title={bookmark ? `${label} · ${endpoint}` : label} onClick={() => { setActiveKey(tab.key); selectBookmark(tab.bookmarkId) }} onAuxClick={(event) => { if (event.button === 1) closeTab(tab) }}><span className={`status-dot ${tab.status}`} /><span title={label}>{label}</span></button>
             <button className="session-tab-close" title={t('app.closeSession')} aria-label={t('app.closeNamedSession', { name: bookmark?.name ?? t('common.session') })} onClick={() => closeTab(tab)}><X size={14} /></button>
           </div> })}
-          <button className="icon-button tab-add" title={t('common.newConnection')} onClick={() => setBookmarkDialog('new')}><CirclePlus size={17} /></button>
+          <button className="icon-button tab-add" title={t('common.newConnection')} onClick={() => openNewBookmark()}><CirclePlus size={17} /></button>
         </div>
-        {tabs.length === 0 ? <div className="welcome-state"><div className="welcome-icon"><Plug size={30} /></div><h2>{t('app.chooseAnSshConnection')}</h2><p>{t('app.useTheTerminalAndSftpFileTransfersIn')}</p><button className="primary-button" onClick={() => setBookmarkDialog('new')}><CirclePlus size={16} />{t('common.newConnection')}</button></div> : <>
+        {tabs.length === 0 ? <div className="welcome-state"><div className="welcome-icon"><Plug size={30} /></div><h2>{t('app.chooseAnSshConnection')}</h2><p>{t('app.useTheTerminalAndSftpFileTransfersIn')}</p><button className="primary-button" onClick={() => openNewBookmark()}><CirclePlus size={16} />{t('common.newConnection')}</button></div> : <>
           <div className="session-toolbar"><div className="session-info"><span className={`status-dot ${activeTab?.status}`} /><span className="session-status">{activeTab ? statusText[activeTab.status] : ''}</span>{activeBookmark && <span className="session-endpoint" title={`${activeBookmark.username}@${activeBookmark.host}:${activeBookmark.port}`}>{activeBookmark.username}@{activeBookmark.host}:{activeBookmark.port}</span>}{activeTab?.error && <span className="error-text" title={activeTab.error}>{activeTab.error}</span>}</div>
             <div className="view-switcher" role="tablist" aria-label={t('app.sessionView')}>
               <button role="tab" title={t('common.terminal')} aria-selected={workspaceView === 'terminal'} className={workspaceView === 'terminal' ? 'active' : ''} onClick={() => setWorkspaceView('terminal')}><SquareTerminal size={15} />{t('common.terminal')}</button>
@@ -767,6 +805,7 @@ export function App(): React.JSX.Element {
     </div>
     {sidebarContextMenu && <div className="sidebar-context-menu" role="menu" style={{ left: sidebarContextMenu.x, top: sidebarContextMenu.y }} onPointerDown={(event) => event.stopPropagation()}>
       {sidebarContextMenu.group !== undefined ? <>
+        <button role="menuitem" onClick={() => { openNewBookmark(sidebarContextMenu.group); setSidebarContextMenu(null) }}><CirclePlus size={15} />{t('common.newConnection')}</button>
         <button role="menuitem" onClick={() => { setSidebarContextMenu(null); setGroupDialog({ mode: 'create' }) }}><FolderPlus size={15} />{t('common.newGroup')}</button>
         <button role="menuitem" onClick={() => { const group = sidebarContextMenu.group ?? ''; setSidebarContextMenu(null); setGroupDialog({ mode: 'rename', group }) }}><Edit3 size={15} />{t('common.renameGroup')}</button>
         <button role="menuitem" className="danger" onClick={() => { const group = sidebarContextMenu.group ?? ''; setSidebarContextMenu(null); void deleteBookmarkGroup(group) }}><Trash2 size={15} />{t('common.deleteGroupAndConnections')}</button>
@@ -775,7 +814,7 @@ export function App(): React.JSX.Element {
         <button role="menuitem" onClick={() => { setSidebarContextMenu(null); void importConnectionArchive() }}><Upload size={15} />{t('app.importConnectionBackup')}</button>
         <button role="menuitem" onClick={() => { setSidebarContextMenu(null); void exportConnectionArchive() }}><Download size={15} />{t('app.exportConnectionBackup')}</button>
         <div className="context-menu-separator" />
-        <button role="menuitem" onClick={() => { setSidebarContextMenu(null); setBookmarkDialog('new') }}><CirclePlus size={15} />{t('common.newConnection')}</button>
+        <button role="menuitem" onClick={() => { openNewBookmark(sidebarContextMenu.bookmark?.groupName); setSidebarContextMenu(null) }}><CirclePlus size={15} />{t('common.newConnection')}</button>
         <button role="menuitem" disabled={!contextBookmark} onClick={() => { setSidebarContextMenu(null); if (contextBookmark) setBookmarkDialog(contextBookmark) }}><Edit3 size={15} />{t('common.editConnection')}</button>
         <button role="menuitem" disabled={!contextBookmark} onClick={() => { setSidebarContextMenu(null); if (contextBookmark) void duplicateBookmark(contextBookmark) }}><Copy size={15} />{t('app.duplicate')}</button>
         <button role="menuitem" disabled={!contextBookmark} className="danger" onClick={() => { setSidebarContextMenu(null); if (contextBookmark) void removeBookmark(contextBookmark) }}><Trash2 size={15} />{t('common.deleteConnection')}</button>
@@ -784,7 +823,7 @@ export function App(): React.JSX.Element {
       </>}
     </div>}
     {groupDialog && <GroupNameDialog mode={groupDialog.mode} initialName={groupDialog.group ?? ''} onClose={() => setGroupDialog(null)} onSave={(name) => void saveGroup(name)} />}
-    {bookmarkDialog && <BookmarkDialog bookmark={bookmarkDialog === 'new' ? undefined : bookmarkDialog} connections={bookmarks} groups={bookmarkGroupNames} onClose={() => setBookmarkDialog(null)} onSaved={async () => { setBookmarkDialog(null); await reloadSidebarData() }} onError={showError} />}
+    {bookmarkDialog && <BookmarkDialog bookmark={bookmarkDialog === 'new' ? undefined : bookmarkDialog} initialGroup={newBookmarkGroup} connections={bookmarks} groups={bookmarkGroupNames} onClose={() => setBookmarkDialog(null)} onSaved={(group) => void bookmarkSaved(group).catch((error) => showError(errorMessage(error)))} onError={showError} />}
     {authRequest && <AuthDialog bookmark={authRequest.bookmark} jumpBookmark={authRequest.bookmark.jumpBookmarkId ? bookmarkMap.get(authRequest.bookmark.jumpBookmarkId) : undefined} onClose={() => setAuthRequest(null)} onConnect={(credentials) => void connect(authRequest.bookmark, credentials, authRequest.target)} />}
     {hostPrompts[0] && <HostKeyDialog prompt={hostPrompts[0]} onDecision={(accept) => { const prompt = hostPrompts[0]; if (!prompt) return; window.api.sessions.hostKeyDecision(prompt.sessionId, accept); setHostPrompts((current) => current.filter((item) => item !== prompt)) }} />}
     {conflict && <ConflictDialog conflict={conflict} onDecision={(resolution, apply) => { window.api.transfers.resolveConflict(conflict.taskId, resolution, apply); setConflict(null) }} />}
@@ -1920,12 +1959,12 @@ function GroupNameDialog({ mode, initialName, onClose, onSave }: { mode: 'create
   </form></Modal>
 }
 
-function BookmarkDialog({ bookmark, connections, groups, onClose, onSaved, onError }: { bookmark?: Bookmark; connections: Bookmark[]; groups: string[]; onClose(): void; onSaved(): void; onError(message: string): void }): React.JSX.Element {
+function BookmarkDialog({ bookmark, initialGroup, connections, groups, onClose, onSaved, onError }: { bookmark?: Bookmark; initialGroup: string; connections: Bookmark[]; groups: string[]; onClose(): void; onSaved(group?: string): void; onError(message: string): void }): React.JSX.Element {
   const { t } = useI18n()
-  const [form, setForm] = useState<BookmarkInput>(bookmark ? { name: bookmark.name, host: bookmark.host, port: bookmark.port, username: bookmark.username, authType: bookmark.authType, privateKeyPath: bookmark.privateKeyPath, jumpBookmarkId: bookmark.jumpBookmarkId, groupName: bookmark.groupName, favorite: bookmark.favorite, keepaliveEnabled: bookmark.keepaliveEnabled, keepaliveIntervalSeconds: bookmark.keepaliveIntervalSeconds, keepaliveCountMax: bookmark.keepaliveCountMax, note: bookmark.note } : emptyBookmark)
+  const [form, setForm] = useState<BookmarkInput>(bookmark ? { name: bookmark.name, host: bookmark.host, port: bookmark.port, username: bookmark.username, authType: bookmark.authType, privateKeyPath: bookmark.privateKeyPath, jumpBookmarkId: bookmark.jumpBookmarkId, groupName: bookmark.groupName, favorite: bookmark.favorite, keepaliveEnabled: bookmark.keepaliveEnabled, keepaliveIntervalSeconds: bookmark.keepaliveIntervalSeconds, keepaliveCountMax: bookmark.keepaliveCountMax, note: bookmark.note } : { ...emptyBookmark, groupName: initialGroup })
   const set = <K extends keyof BookmarkInput>(key: K, value: BookmarkInput[K]): void => setForm((current) => ({ ...current, [key]: value }))
   const jumpCandidates = connections.filter((item) => item.id !== bookmark?.id && !item.jumpBookmarkId)
-  return <Modal title={bookmark ? t('common.editConnection') : t('common.newConnection')} onClose={onClose}><form className="form-grid" onSubmit={async (event) => { event.preventDefault(); try { await window.api.bookmarks.save({ ...form, id: bookmark?.id }); onSaved() } catch (error) { onError(errorMessage(error)) } }}>
+  return <Modal title={bookmark ? t('common.editConnection') : t('common.newConnection')} onClose={onClose}><form className="form-grid" onSubmit={async (event) => { event.preventDefault(); try { await window.api.bookmarks.save({ ...form, id: bookmark?.id }); onSaved(form.groupName) } catch (error) { onError(errorMessage(error)) } }}>
     <div className="form-row"><label>{t('app.name')}<input required value={form.name} onChange={(event) => set('name', event.target.value)} placeholder={t('app.productionServer')} /></label><label>{t('app.group')}<select value={form.groupName} onChange={(event) => set('groupName', event.target.value)}><option value="">{t('common.ungrouped')}</option>{groups.filter(Boolean).map((group) => <option key={group} value={group}>{group}</option>)}</select></label></div>
     <label className="check-label"><input type="checkbox" checked={form.favorite} onChange={(event) => set('favorite', event.target.checked)} />{t('app.favoriteThisConnection')}</label>
     <div className="form-row"><label>{t('app.hostIpOrDomain')}<input required value={form.host} onChange={(event) => set('host', event.target.value)} placeholder="192.168.1.10" /></label><label className="port-field">{t('app.port')}<input type="number" min="1" max="65535" value={form.port} onChange={(event) => set('port', Number(event.target.value))} /></label></div>

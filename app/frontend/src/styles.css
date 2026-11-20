@@ -39,6 +39,9 @@ button { color: inherit; }
   --accent-surface: #eaf3fd;
   --selection-bg: #e8edf2;
   --selection-hover: #e3e9ef;
+  --connection-selection-bg: #edf4fc;
+  --connection-selection-hover: #e4effb;
+  --connection-selection-border: #cedff1;
   --session-tab-bg: #ffffff;
   --session-tab-border: #aab7c6;
   --primary: #216fca;
@@ -109,8 +112,11 @@ button { color: inherit; }
   --accent-surface: #202d3a;
   --selection-bg: #292e34;
   --selection-hover: #2d333a;
-  --session-tab-bg: #30363e;
-  --session-tab-border: #515c69;
+  --connection-selection-bg: #1c2631;
+  --connection-selection-hover: #222e3b;
+  --connection-selection-border: #30445a;
+  --session-tab-bg: #202a35;
+  --session-tab-border: #354b61;
   --primary: #347fc9;
   --primary-hover: #2d73b8;
   --primary-border: #2a69a7;
@@ -173,9 +179,10 @@ body.sidebar-item-dragging, body.sidebar-item-dragging * { cursor: grabbing !imp
 .bookmark-group-empty { padding: 10px 12px; color: var(--text-subtle); font-size: 12px; }
 .bookmark-item { position: relative; width: 100%; min-height: 48px; margin: 2px 0; padding: 6px 6px 6px 2px; display: grid; grid-template-columns: 12px 22px minmax(0, 1fr) max-content; align-items: center; gap: 4px; color: var(--text-muted); text-align: left; background: transparent; border: 0; border-radius: var(--radius-control); cursor: pointer; }
 .bookmark-item:hover { background: var(--surface-hover); }
-.bookmark-item.active { color: var(--text-strong); background: var(--selection-bg); }
-.bookmark-item.active:hover { background: var(--selection-hover); }
-.bookmark-item.active .server-icon::after { border-color: var(--selection-bg); }
+.bookmark-item.active { color: var(--text); background: var(--connection-selection-bg); box-shadow: inset 2px 0 0 var(--accent), inset 0 0 0 1px var(--connection-selection-border); }
+.bookmark-item.active:hover { background: var(--connection-selection-hover); }
+.bookmark-item.active .server-icon::after { border-color: var(--connection-selection-bg); }
+.bookmark-item.active:hover .server-icon::after { border-color: var(--connection-selection-hover); }
 .bookmark-item.dragging { opacity: .42; cursor: grabbing; }
 .bookmark-item.drop-before::before, .bookmark-item.drop-after::after { content: ""; position: absolute; z-index: 2; right: 4px; left: 4px; height: 2px; border-radius: 1px; background: var(--accent); pointer-events: none; }
 .bookmark-item.drop-before::before { top: -2px; }
@@ -190,7 +197,7 @@ body.sidebar-item-dragging, body.sidebar-item-dragging * { cursor: grabbing !imp
 .bookmark-copy { min-width: 0; display: flex; flex-direction: column; gap: 4px; }
 .bookmark-copy strong, .bookmark-copy small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .bookmark-copy strong { font-size: 12px; font-weight: 500; }
-.bookmark-item.active .bookmark-copy strong { font-weight: 600; }
+.bookmark-item.active .bookmark-copy strong { color: var(--accent-text); font-weight: 600; }
 .bookmark-copy small { color: var(--text-muted); font-size: 11px; }
 .bookmark-group { position: relative; width: 100%; min-height: 36px; padding: 1px 3px 1px 1px; display: flex; align-items: center; gap: 2px; color: var(--text-strong); border: 1px solid transparent; border-radius: var(--radius-control); background: transparent; font-size: 12px; font-weight: 600; }
 .bookmark-group:hover { color: var(--text-strong); background: var(--surface-hover); }
@@ -224,7 +231,7 @@ body.sidebar-item-dragging, body.sidebar-item-dragging * { cursor: grabbing !imp
 .tab-sidebar-toggle { position: sticky; z-index: 3; left: 0; width: 32px; height: 32px; flex: none; border-radius: var(--radius-control); background: var(--canvas); }
 .session-tab { position: relative; flex: 0 1 210px; min-width: 130px; max-width: 230px; height: 32px; display: grid; grid-template-columns: minmax(0, 1fr) 30px; align-items: center; color: var(--text-muted); border: 1px solid transparent; border-radius: var(--radius-control); background: transparent; font-size: 12px; transition: background-color .12s ease, color .12s ease, border-color .12s ease; }
 .session-tab:not(.active):hover { background: var(--surface-hover); }
-.session-tab.active { z-index: 1; color: var(--text-strong); background: var(--session-tab-bg); border-color: var(--session-tab-border); box-shadow: 0 1px 3px #0003, inset 0 1px 0 #ffffff0a; }
+.session-tab.active { z-index: 1; color: var(--text); background: var(--session-tab-bg); border-color: var(--session-tab-border); }
 .session-tab.active .session-tab-close { color: var(--text); }
 .session-tab-select { min-width: 0; height: 100%; padding: 0 4px 0 10px; display: flex; align-items: center; gap: 7px; color: inherit; background: transparent; border: 0; cursor: pointer; }
 .session-tab-select > span:nth-child(2) { min-width: 0; flex: 1; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; text-align: left; }
@@ -238,7 +245,7 @@ body.sidebar-item-dragging, body.sidebar-item-dragging * { cursor: grabbing !imp
 .status-dot.error { background: var(--danger); }
 @keyframes pulse { 50% { opacity: .4; } }
 
-.session-toolbar { grid-row: 2; min-height: 38px; padding: 4px 10px; display: flex; align-items: center; justify-content: space-between; background: var(--surface-raised); border-bottom: 1px solid var(--border-soft); font-size: 12px; }
+.session-toolbar { grid-row: 2; min-height: 38px; margin: 4px 6px; padding: 4px 10px; display: flex; align-items: center; justify-content: space-between; background: var(--surface-raised); border: 1px solid var(--border-soft); border-radius: var(--radius-panel); font-size: 12px; }
 .session-toolbar > div { min-width: 0; display: flex; align-items: center; gap: 8px; }
 .session-info, .session-actions { flex: 1 1 0; }
 .session-actions { justify-content: flex-end; }
